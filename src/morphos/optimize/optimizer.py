@@ -12,6 +12,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field as _dc_field
 from typing import List, Optional
 
+import numpy as np
+
 from morphos.field import Field
 
 
@@ -23,6 +25,7 @@ class OptimizeResult:
     iterations: int = 0
     used_finite_differences: bool = False
     converged: bool = False
+    params: Optional[np.ndarray] = None
 
 
 class Optimizer(ABC):

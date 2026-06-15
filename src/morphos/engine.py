@@ -7,14 +7,23 @@ the physical limit when the objective exposes one.
 
 from __future__ import annotations
 
-from morphos.spec import DesignSpec, DesignResult
+from morphos.spec import DesignSpec, DesignResult, ParametricSpec
 
 
 class Engine:
-    def run(self, spec: DesignSpec) -> DesignResult:
-        opt = spec.optimizer.run(
-            spec.initial, spec.oracle, spec.objective, spec.constraint
-        )
+    def run(self, spec) -> DesignResult:
+        if isinstance(spec, ParametricSpec):
+            opt = spec.optimizer.run(
+                spec.initial_params,
+                spec.build,
+                spec.oracle,
+                spec.objective,
+                spec.constraint,
+            )
+        else:
+            opt = spec.optimizer.run(
+                spec.initial, spec.oracle, spec.objective, spec.constraint
+            )
 
         bound = spec.objective.bound()
         margin = None if bound is None else bound.margin(opt.fom)

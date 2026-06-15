@@ -8,7 +8,9 @@ optimized geometry and, crucially, the margin to the physical limit.
 from __future__ import annotations
 
 from dataclasses import dataclass, field as _dc_field
-from typing import List, Optional
+from typing import Callable, List, Optional
+
+import numpy as np
 
 from morphos.field import Field
 from morphos.objective.objective import Objective, PhysicalBound
@@ -18,10 +20,25 @@ from morphos.physics.oracle import PhysicsOracle
 
 @dataclass
 class DesignSpec:
+    """Topology design: the Field itself is the design variable."""
+
     initial: Field
     oracle: PhysicsOracle
     objective: Objective
     optimizer: Optimizer
+    constraint: object = None
+    name: str = ""
+
+
+@dataclass
+class ParametricSpec:
+    """Parametric design: a small parameter vector built into a Field by a kernel."""
+
+    initial_params: np.ndarray
+    build: Callable[[np.ndarray], Field]
+    oracle: PhysicsOracle
+    objective: Objective
+    optimizer: object
     constraint: object = None
     name: str = ""
 
