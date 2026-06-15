@@ -32,12 +32,14 @@ end in two modes:
 - parametric design, where a small parameter vector is built into geometry by a
   kernel.
 
-Two physics backends exercise the same core: a dependency-light analytic oracle
-with exact gradients, and a real steady-state heat-conduction PDE solver with an
-adjoint gradient verified against finite differences. Every design result reports
-its margin to the physical limit. The electromagnetic backend and the production
-PicoGK geometry kernel are documented integration points that plug in behind the
-same interfaces.
+Three physics backends exercise the same core: a dependency-light analytic oracle
+with exact gradients, a real steady-state heat-conduction PDE solver with an
+adjoint gradient verified against finite differences, and a 2D electromagnetic
+FDFD backend (ceviche, optional dependency) with a reverse-mode adjoint. The EM
+focusing demo inverse-designs a dielectric that concentrates about 50 times more
+energy on a probe than empty space. Every design result reports its margin to the
+physical limit. The production PicoGK geometry kernel is a documented integration
+point that plugs in behind the same interface.
 
 ## Layout
 

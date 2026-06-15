@@ -59,12 +59,20 @@ class TopologyOptimizer(Optimizer):
         converged = False
         prev_fom = None
         iterations = 0
+        best_fom = -np.inf
+        best_field = None
 
         for i in range(self.max_iter):
             iterations = i + 1
             design = self._project(x, constraint)
             ov = objective.evaluate(oracle.solve(design))
             history.append(ov.fom)
+
+            # Track the best design seen. Fixed-step ascent can overshoot on a
+            # non-convex problem, so the last design is not always the best.
+            if ov.fom > best_fom:
+                best_fom = ov.fom
+                best_field = design.copy()
 
             if prev_fom is not None and abs(ov.fom - prev_fom) < self.tol:
                 converged = True
@@ -85,9 +93,13 @@ class TopologyOptimizer(Optimizer):
 
         final_design = self._project(x, constraint)
         final_fom = objective.evaluate(oracle.solve(final_design)).fom
+        if final_fom > best_fom:
+            best_fom = final_fom
+            best_field = final_design.copy()
+
         return OptimizeResult(
-            field=final_design,
-            fom=final_fom,
+            field=best_field,
+            fom=best_fom,
             history=history,
             iterations=iterations,
             used_finite_differences=used_fd,

@@ -70,9 +70,10 @@ GeometryKernel  PhysicsOracle  Objective   Optimizer   Manufacturability
    `PhysicsResult` carrying the raw solved quantity, and where available a
    gradient with respect to the field (the adjoint). Backends: `analytic` (a
    closed-form oracle with exact gradients, dependency-light, for tests and for
-   bringing the whole pipeline up green), `ceviche_em` (the electromagnetic
-   backend integration point, FDFD via ceviche, an optional dependency that is
-   declared but not yet wired up, so it fails loudly rather than faking a solve).
+   bringing the whole pipeline up green), `heat` (a real steady-state heat
+   conduction PDE with an exact adjoint), and `ceviche_em` (a 2D electromagnetic
+   FDFD solver via ceviche, an optional dependency, with a reverse-mode adjoint
+   and an intensity-at-probe figure of merit normalized to the vacuum baseline).
 
 3. `Objective` (objective/objective.py): maps a `PhysicsResult` to a scalar
    figure of merit to be maximized, and optionally exposes a `PhysicalBound`,
@@ -131,9 +132,9 @@ answer so the whole pipeline can be verified without heavy dependencies:
 - engine end to end: on the analytic problem, converges to within tolerance of
   the known optimum and reports a correct margin to the bound.
 
-The electromagnetic backend integration point is covered by a separate, skipped
-test that runs only when the optional dependency is installed, so core CI stays
-fast and dependency-light.
+The electromagnetic backend is covered by tests that run only when the optional
+dependency is installed and skip otherwise, so core CI stays fast and
+dependency-light.
 
 ## What this proves and does not prove
 
