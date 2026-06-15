@@ -25,9 +25,18 @@ electromagnetic solvers, so geometry passes to physics with no meshing step.
 
 ## Status
 
-Skeleton under construction. The core interfaces and a dependency-light reference
-backend run a full inverse-design loop end to end and are covered by tests. The
-real electromagnetic backend and the production geometry kernel plug in behind the
+Skeleton complete and covered by tests. It runs a full inverse-design loop end to
+end in two modes:
+
+- topology optimization, where every voxel is a design variable, and
+- parametric design, where a small parameter vector is built into geometry by a
+  kernel.
+
+Two physics backends exercise the same core: a dependency-light analytic oracle
+with exact gradients, and a real steady-state heat-conduction PDE solver with an
+adjoint gradient verified against finite differences. Every design result reports
+its margin to the physical limit. The electromagnetic backend and the production
+PicoGK geometry kernel are documented integration points that plug in behind the
 same interfaces.
 
 ## Layout

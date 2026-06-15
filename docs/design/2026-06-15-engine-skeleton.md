@@ -80,8 +80,11 @@ GeometryKernel  PhysicsOracle  Objective   Optimizer   Manufacturability
 
 4. `Optimizer` (optimize/optimizer.py): runs the inverse-design loop, calling the
    oracle and objective, using gradients when present and finite differences
-   otherwise. First concrete method: density-based topology optimization with a
-   smoothing filter and a threshold projection.
+   otherwise. Two concrete methods: density-based topology optimization (every
+   voxel is a design variable, driven by the adjoint), and parametric design (a
+   small parameter vector built into geometry by a kernel, optimized with a
+   bounded quasi-Newton method since a single parameter accumulates sensitivity
+   over the whole grid and is therefore scale sensitive).
 
 5. `Manufacturability` (manufacturing/constraints.py): constraints and
    projections applied to the `Field` inside the loop. First: minimum feature
