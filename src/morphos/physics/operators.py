@@ -131,3 +131,71 @@ def q4_plane_stress_stiffness(
         # Gauss weights are 1 for the 2-point rule on each axis.
         K += (B.T @ C @ B) * det_j
     return K
+
+
+def hex8_stiffness(young_modulus: float, poisson_ratio: float, h: float) -> np.ndarray:
+    """Stiffness matrix of one trilinear hexahedral (Hex8) solid element.
+
+    The 3D analogue of :func:`q4_plane_stress_stiffness`: a cube element of
+    side ``h``, isotropic linear-elastic material, used by the 3D extension of
+    the elasticity SIMP backend (the standard element behind 3D topology
+    optimization codes such as Liu & Tovar's top3D). Local node order is the
+    natural-coordinate corners ``(-1,-1,-1)`` through ``(-1,1,1)`` -- bottom
+    face counterclockwise then top face counterclockwise, matching the Q4
+    convention extruded along z -- and the 24x24 matrix's degrees of freedom
+    are interleaved ``[u0x, u0y, u0z, u1x, u1y, u1z, ...]``.
+
+    Assembled by 2x2x2 Gauss quadrature, exact for the trilinear shape
+    functions' strain-displacement product. Checked in ``tests/test_operators.py``
+    against an independent re-derivation of the same quadrature, for symmetry,
+    and for the expected null space (the six spatial rigid-body modes: three
+    translations, three rotations).
+    """
+    E, nu = float(young_modulus), float(poisson_ratio)
+    # Isotropic 3D constitutive matrix relating stress to engineering strain
+    # (exx, eyy, ezz, gamma_xy, gamma_yz, gamma_zx).
+    lam_c = E / ((1.0 + nu) * (1.0 - 2.0 * nu))
+    C = lam_c * np.array(
+        [
+            [1.0 - nu, nu, nu, 0.0, 0.0, 0.0],
+            [nu, 1.0 - nu, nu, 0.0, 0.0, 0.0],
+            [nu, nu, 1.0 - nu, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, (1.0 - 2.0 * nu) / 2.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, (1.0 - 2.0 * nu) / 2.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, (1.0 - 2.0 * nu) / 2.0],
+        ]
+    )
+    gp = 1.0 / np.sqrt(3.0)
+    gauss_points = [(a, b, c) for a in (-gp, gp) for b in (-gp, gp) for c in (-gp, gp)]
+    # Natural coordinates of the eight nodes, same order as the docstring.
+    node_xi = np.array([-1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0])
+    node_eta = np.array([-1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0])
+    node_zeta = np.array([-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0])
+    # Jacobian of the map from natural coords [-1,1]^3 to physical [0,h]^3 is
+    # constant (h/2 on the diagonal) for this cubic element.
+    j = h / 2.0
+    det_j = j * j * j
+    inv_j = 1.0 / j
+
+    K = np.zeros((24, 24))
+    for xi, eta, zeta in gauss_points:
+        dN_dxi = 0.125 * node_xi * (1.0 + node_eta * eta) * (1.0 + node_zeta * zeta)
+        dN_deta = 0.125 * node_eta * (1.0 + node_xi * xi) * (1.0 + node_zeta * zeta)
+        dN_dzeta = 0.125 * node_zeta * (1.0 + node_xi * xi) * (1.0 + node_eta * eta)
+        dN_dx = inv_j * dN_dxi
+        dN_dy = inv_j * dN_deta
+        dN_dz = inv_j * dN_dzeta
+        B = np.zeros((6, 24))
+        for i in range(8):
+            B[0, 3 * i] = dN_dx[i]
+            B[1, 3 * i + 1] = dN_dy[i]
+            B[2, 3 * i + 2] = dN_dz[i]
+            B[3, 3 * i] = dN_dy[i]
+            B[3, 3 * i + 1] = dN_dx[i]
+            B[4, 3 * i + 1] = dN_dz[i]
+            B[4, 3 * i + 2] = dN_dy[i]
+            B[5, 3 * i] = dN_dz[i]
+            B[5, 3 * i + 2] = dN_dx[i]
+        # Gauss weights are 1 for the 2-point rule on each axis.
+        K += (B.T @ C @ B) * det_j
+    return K

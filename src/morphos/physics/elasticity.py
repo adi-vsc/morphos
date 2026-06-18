@@ -1,7 +1,8 @@
-"""A real PDE physics backend: 2D linear elasticity for SIMP topology
-optimization (the structural leg of the classic structural/thermal/EM
-topology-optimization triad; this backend completes it alongside
-:mod:`morphos.physics.heat` and the ``ceviche_em`` backend).
+"""A real PDE physics backend: linear elasticity for SIMP topology
+optimization, 2D plane-stress (Q4) or 3D solid (Hex8) (the structural leg of
+the classic structural/thermal/EM topology-optimization triad; this backend
+completes it alongside :mod:`morphos.physics.heat` and the ``ceviche_em``
+backend).
 
 The design field ``rho`` (in ``[0, 1]``, one value per grid cell) is the SIMP
 ("solid isotropic material with penalization") density. Each cell is one
@@ -70,10 +71,20 @@ from scipy import sparse
 from scipy.sparse.linalg import spsolve
 
 from morphos.field import Field
-from morphos.physics.operators import q4_plane_stress_stiffness
+from morphos.physics.operators import hex8_stiffness, q4_plane_stress_stiffness
 from morphos.physics.oracle import PhysicsOracle, PhysicsResult
 
-_AXES = {"x": 0, "y": 1}
+_AXES = {"x": 0, "y": 1, "z": 2}
+
+# (dx, dy[, dz]) offsets of each element's local nodes, in the same natural-
+# coordinate corner order as q4_plane_stress_stiffness / hex8_stiffness.
+_LOCAL_NODE_OFFSETS = {
+    2: [(0, 0), (1, 0), (1, 1), (0, 1)],
+    3: [
+        (0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0),
+        (0, 0, 1), (1, 0, 1), (1, 1, 1), (0, 1, 1),
+    ],
+}
 
 
 class ElasticityOracle(PhysicsOracle):
@@ -81,28 +92,30 @@ class ElasticityOracle(PhysicsOracle):
 
     def __init__(
         self,
-        shape: Tuple[int, int],
-        fixed_dofs: Iterable[Tuple[int, int, str]],
-        loads: Dict[Tuple[int, int, str], float],
+        shape: Tuple[int, ...],
+        fixed_dofs: Iterable[Tuple[int, ...]],
+        loads: Dict[Tuple[int, ...], float],
         young_modulus: float = 1.0,
         poisson_ratio: float = 0.3,
         penalty: float = 3.0,
         e_min_fraction: float = 1e-9,
     ) -> None:
-        """Plane-stress SIMP compliance oracle.
+        """SIMP compliance oracle: 2D plane-stress (Q4) or 3D solid (Hex8).
 
         Parameters
         ----------
         shape:
-            ``(ny, nx)`` number of *elements* (the design field has this
-            shape; the node grid is ``(ny + 1, nx + 1)``).
+            Number of *elements* per axis: ``(ny, nx)`` for 2D plane-stress or
+            ``(nz, ny, nx)`` for 3D solid (the design field has this shape;
+            the node grid is one larger on every axis).
         fixed_dofs:
-            Iterable of ``(node_x, node_y, axis)`` triples, ``axis`` in
-            ``{"x", "y"}``, naming nodal degrees of freedom held at zero
-            displacement (the support boundary condition). Node indices are
-            0-based, ``node_x`` in ``[0, nx]``, ``node_y`` in ``[0, ny]``.
+            Iterable of ``(node_x, node_y, axis)`` triples (2D) or
+            ``(node_x, node_y, node_z, axis)`` quadruples (3D), ``axis`` in
+            ``{"x", "y"}`` / ``{"x", "y", "z"}``, naming nodal degrees of
+            freedom held at zero displacement (the support boundary
+            condition). Node indices are 0-based.
         loads:
-            Mapping ``(node_x, node_y, axis) -> force`` for every loaded
+            Mapping of the same coordinate tuples to force, for every loaded
             degree of freedom; unlisted DOFs carry zero force.
         young_modulus, poisson_ratio:
             Solid-material (``rho = 1``) elastic properties, ``E0`` below.
@@ -112,21 +125,24 @@ class ElasticityOracle(PhysicsOracle):
             Void-region stiffness floor as a fraction of ``E0``, avoiding a
             singular global stiffness matrix when a cell's density is zero.
         """
-        if len(shape) != 2:
-            raise ValueError("ElasticityOracle needs a 2D (ny, nx) grid of elements")
-        ny, nx = shape
-        if ny < 1 or nx < 1:
+        if len(shape) not in (2, 3):
+            raise ValueError(
+                "ElasticityOracle needs a 2D (ny, nx) or 3D (nz, ny, nx) grid of elements"
+            )
+        if any(int(s) < 1 for s in shape):
             raise ValueError("grid must have at least one element per axis")
         if penalty <= 0.0:
             raise ValueError("penalty must be positive")
-        self.shape = (int(ny), int(nx))
+        self.ndim = len(shape)
+        self.shape = tuple(int(s) for s in shape)
         self.young_modulus = float(young_modulus)
         self.poisson_ratio = float(poisson_ratio)
         self.penalty = float(penalty)
         self.e_min = float(e_min_fraction) * self.young_modulus
 
-        self._nny, self._nnx = ny + 1, nx + 1
-        self._n_dof = 2 * self._nny * self._nnx
+        # Node-grid extent in the same axis order as `shape` (..., y, x).
+        self._nn = tuple(s + 1 for s in self.shape)
+        self._n_dof = self.ndim * int(np.prod(self._nn))
 
         self._fixed = sorted({self._dof_index(*t) for t in fixed_dofs})
         if not self._fixed:
@@ -137,8 +153,8 @@ class ElasticityOracle(PhysicsOracle):
         self._free = all_dofs[~fixed_mask]
 
         F = np.zeros(self._n_dof)
-        for (i, j, axis), force in loads.items():
-            F[self._dof_index(i, j, axis)] += float(force)
+        for t, force in loads.items():
+            F[self._dof_index(*t)] += float(force)
         self._F = F
         if not np.any(F[self._free] != 0.0):
             raise ValueError("loads must apply nonzero force on at least one free dof")
@@ -147,37 +163,44 @@ class ElasticityOracle(PhysicsOracle):
         self._h = None
         self._elem_dof = self._element_dof_table()
 
-    def _dof_index(self, node_x: int, node_y: int, axis: str) -> int:
-        if axis not in _AXES:
-            raise ValueError(f"axis must be 'x' or 'y', got {axis!r}")
-        if not (0 <= node_x < self._nnx) or not (0 <= node_y < self._nny):
+    def _dof_index(self, *args) -> int:
+        *coords, axis = args
+        if len(coords) != self.ndim:
             raise ValueError(
-                f"node ({node_x}, {node_y}) out of range for "
-                f"{self._nny}x{self._nnx} node grid"
+                f"expected {self.ndim} coordinate(s) plus axis, got {args!r}"
             )
-        node = node_y * self._nnx + node_x
-        return 2 * node + _AXES[axis]
+        if axis not in _AXES or _AXES[axis] >= self.ndim:
+            raise ValueError(f"axis must be one of {list(_AXES)[: self.ndim]}, got {axis!r}")
+        # coords are given fastest-to-slowest (x, y[, z]); node-grid axes are
+        # slowest-to-first (..., y, x), matching `shape`.
+        coords_axis_order = tuple(reversed(coords))
+        for c, n in zip(coords_axis_order, self._nn):
+            if not (0 <= c < n):
+                raise ValueError(f"node {coords} out of range for node grid {self._nn}")
+        node = int(np.ravel_multi_index(coords_axis_order, self._nn))
+        return self.ndim * node + _AXES[axis]
 
     def _element_dof_table(self) -> np.ndarray:
-        """Row e -> the 8 global dof indices of element e, in q4 local order."""
-        ny, nx = self.shape
-        table = np.zeros((ny * nx, 8), dtype=int)
-        for ey in range(ny):
-            for ex in range(nx):
-                e = ey * nx + ex
-                # local node order: (ex,ey), (ex+1,ey), (ex+1,ey+1), (ex,ey+1)
-                nodes = [
-                    (ex, ey),
-                    (ex + 1, ey),
-                    (ex + 1, ey + 1),
-                    (ex, ey + 1),
-                ]
-                dofs = []
-                for (nx_, ny_) in nodes:
-                    node = ny_ * self._nnx + nx_
-                    dofs.extend([2 * node, 2 * node + 1])
-                table[e] = dofs
+        """Row e -> the per-element global dof indices, in local node order."""
+        n_elem = int(np.prod(self.shape))
+        n_local_dof = self.ndim * (2 ** self.ndim)
+        table = np.zeros((n_elem, n_local_dof), dtype=int)
+        offsets = _LOCAL_NODE_OFFSETS[self.ndim]
+        for idx in np.ndindex(*self.shape):  # idx in axis order (..., ey, ex)
+            e = int(np.ravel_multi_index(idx, self.shape))
+            dofs = []
+            for off in offsets:  # off given fastest-to-slowest (dx, dy[, dz])
+                off_axis_order = tuple(reversed(off))
+                node_coord = tuple(i + o for i, o in zip(idx, off_axis_order))
+                node = int(np.ravel_multi_index(node_coord, self._nn))
+                dofs.extend(self.ndim * node + k for k in range(self.ndim))
+            table[e] = dofs
         return table
+
+    def _element_stiffness(self, e_modulus: float, h: float) -> np.ndarray:
+        if self.ndim == 2:
+            return q4_plane_stress_stiffness(e_modulus, self.poisson_ratio, h)
+        return hex8_stiffness(e_modulus, self.poisson_ratio, h)
 
     def _unit_stiffness(self, h: float) -> np.ndarray:
         if self._k0 is None or self._h != h:
@@ -188,12 +211,8 @@ class ElasticityOracle(PhysicsOracle):
             # k0 directly at modulus (E0 - E_min) so K_e = E_min*k_floor +
             # rho_e**p * k0; k_floor is k0 scaled by E_min/(E0-E_min) when E0
             # != E_min, assembled below from the same shape function call.
-            self._k0 = q4_plane_stress_stiffness(
-                self.young_modulus - self.e_min, self.poisson_ratio, h
-            )
-            self._k_floor = q4_plane_stress_stiffness(
-                self.e_min, self.poisson_ratio, h
-            )
+            self._k0 = self._element_stiffness(self.young_modulus - self.e_min, h)
+            self._k_floor = self._element_stiffness(self.e_min, h)
             self._h = h
         return self._k0
 
@@ -201,10 +220,15 @@ class ElasticityOracle(PhysicsOracle):
         k0 = self._unit_stiffness(h)
         k_floor = self._k_floor
         n_elem = rho_flat.size
+        n_local_dof = self._elem_dof.shape[1]
         scale = rho_flat ** self.penalty  # (n_elem,)
 
-        rows = np.repeat(self._elem_dof, 8, axis=1).reshape(n_elem, 8, 8)
-        cols = np.tile(self._elem_dof, (1, 8)).reshape(n_elem, 8, 8)
+        rows = np.repeat(self._elem_dof, n_local_dof, axis=1).reshape(
+            n_elem, n_local_dof, n_local_dof
+        )
+        cols = np.tile(self._elem_dof, (1, n_local_dof)).reshape(
+            n_elem, n_local_dof, n_local_dof
+        )
         # K_e = k_floor + rho_e**p * k0  (k_floor independent of rho: the void
         # stiffness floor that keeps K nonsingular everywhere).
         vals = k_floor[None, :, :] + scale[:, None, None] * k0[None, :, :]
@@ -251,7 +275,7 @@ class ElasticityOracle(PhysicsOracle):
         grad_flat = dE_drho * energy
         gradient = grad_flat.reshape(self.shape)
 
-        displacement = u.reshape(self._nny, self._nnx, 2)
+        displacement = u.reshape(*self._nn, self.ndim)
         return PhysicsResult(
             value=value,
             gradient=gradient,

@@ -118,3 +118,89 @@ def test_modal_3d_adjoint_passes_fd_gate():
     grad = o.solve(Field(x0, spacing=h)).gradient
     f = lambda x: o.solve(Field(x, spacing=h)).value
     fd_gate(f, grad, x0, rel=1e-4)
+
+
+# --- elasticity (Hex8) -----------------------------------------------------
+
+def cantilever_bcs_3d(shape, load=-1.0):
+    """3D cantilever: fix the x=0 face nodes in all axes, downward (z) point
+    load at one bottom corner of the free (x=nx) face."""
+    nz, ny, nx = shape
+    nnz, nny, nnx = nz + 1, ny + 1, nx + 1
+    fixed = []
+    for k in range(nnz):
+        for j in range(nny):
+            fixed.append((0, j, k, "x"))
+            fixed.append((0, j, k, "y"))
+            fixed.append((0, j, k, "z"))
+    loads = {(nnx - 1, nny - 1, 0, "z"): load}
+    return fixed, loads
+
+
+def test_elasticity_3d_oracle_is_a_physics_oracle():
+    from morphos.physics.elasticity import ElasticityOracle
+    from morphos.physics.oracle import PhysicsOracle
+
+    shape = (3, 4, 6)
+    fixed, loads = cantilever_bcs_3d(shape)
+    o = ElasticityOracle(shape=shape, fixed_dofs=fixed, loads=loads)
+    assert isinstance(o, PhysicsOracle)
+    assert o.provides_gradient is True
+
+
+def test_elasticity_3d_fixed_dofs_have_zero_displacement():
+    from morphos.physics.elasticity import ElasticityOracle
+
+    shape = (3, 3, 5)
+    fixed, loads = cantilever_bcs_3d(shape)
+    o = ElasticityOracle(shape=shape, fixed_dofs=fixed, loads=loads)
+    field = Field(np.ones(shape), spacing=1.0)
+    r = o.solve(field)
+    u = r.aux["displacement"]  # shape (nnz, nny, nnx, 3)
+    assert np.allclose(u[:, :, 0, :], 0.0, atol=1e-10)
+
+
+def test_elasticity_3d_compliance_is_positive():
+    from morphos.physics.elasticity import ElasticityOracle
+
+    shape = (3, 4, 6)
+    fixed, loads = cantilever_bcs_3d(shape)
+    o = ElasticityOracle(shape=shape, fixed_dofs=fixed, loads=loads)
+    r = o.solve(Field(np.ones(shape), spacing=1.0))
+    assert r.aux["compliance"] > 0.0
+    assert r.value == pytest.approx(-r.aux["compliance"])
+
+
+def test_elasticity_3d_higher_density_reduces_compliance():
+    from morphos.physics.elasticity import ElasticityOracle
+
+    shape = (3, 4, 6)
+    fixed, loads = cantilever_bcs_3d(shape)
+    o = ElasticityOracle(shape=shape, fixed_dofs=fixed, loads=loads)
+    soft = o.solve(Field(np.full(shape, 0.3), spacing=1.0)).aux["compliance"]
+    stiff = o.solve(Field(np.full(shape, 1.0), spacing=1.0)).aux["compliance"]
+    assert stiff < soft
+
+
+def test_elasticity_3d_simp_gradient_passes_directional_fd_gate():
+    from morphos.physics.elasticity import ElasticityOracle
+
+    shape = (3, 3, 4)
+    fixed, loads = cantilever_bcs_3d(shape)
+    o = ElasticityOracle(shape=shape, fixed_dofs=fixed, loads=loads)
+    rng = np.random.default_rng(13)
+    x0 = 0.3 + 0.6 * rng.uniform(size=shape)
+    grad = o.solve(Field(x0, spacing=1.0)).gradient
+    f = lambda x: o.solve(Field(x, spacing=1.0)).value
+    fd_gate(f, grad, x0, rel=1e-4)
+
+
+def test_elasticity_rejects_unsupported_dimension():
+    from morphos.physics.elasticity import ElasticityOracle
+
+    with pytest.raises(ValueError):
+        ElasticityOracle(
+            shape=(2, 2, 2, 2),
+            fixed_dofs=[(0, 0, 0, 0, "x")],
+            loads={(1, 1, 1, 1, "x"): 1.0},
+        )
