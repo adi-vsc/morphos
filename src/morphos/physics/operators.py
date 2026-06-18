@@ -1,19 +1,25 @@
-"""Shared finite-difference operators on the regular Cartesian grid.
+"""Shared finite-difference / finite-element operators on the regular grid.
 
 The implicit-geometry / grid-physics architecture (see project notes) leans on a
 single voxel grid as the lingua franca, so the discrete operators that physics
 backends need live here once rather than being re-derived per backend.
 
-The central object is the interior Laplacian: the symmetric positive-definite
-discretization of ``-laplacian`` on the interior unknowns of a grid held at zero
-on the Dirichlet boundary. It is assembled by Kronecker products of the 1D
-second-difference operator, which is fully vectorized (no Python element loop)
-and therefore scales to large grids, and it is shared by both the steady
-heat-conduction solve and the modal eigensolver.
+Two families of operator live here:
+
+- The interior Laplacian: the symmetric positive-definite discretization of
+  ``-laplacian`` on the interior unknowns of a grid held at zero on the
+  Dirichlet boundary. Assembled by Kronecker products of the 1D
+  second-difference operator (fully vectorized, no Python element loop), and
+  shared by the steady heat-conduction solve and the modal eigensolver.
+- ``q4_plane_stress_stiffness``: the bilinear-quad (Q4) plane-stress element
+  stiffness matrix used by the elasticity backend, the finite-element analogue
+  of the finite-difference Laplacian above (one constant local operator,
+  scaled per element and assembled into a global sparse matrix by the caller).
 """
 
 from __future__ import annotations
 
+import numpy as np
 from scipy import sparse
 
 
@@ -67,3 +73,61 @@ def interior_laplacian(shape, h: float) -> sparse.csr_matrix:
             term = sparse.kron(term, f, format="csr")
         A = term if A is None else A + term
     return A.tocsr()
+
+
+def q4_plane_stress_stiffness(
+    young_modulus: float, poisson_ratio: float, h: float
+) -> np.ndarray:
+    """Stiffness matrix of one bilinear-quad (Q4) plane-stress element.
+
+    A square element of side ``h``, unit out-of-plane thickness, isotropic
+    linear-elastic material (``young_modulus``, ``poisson_ratio``). Local node
+    order is counterclockwise starting at the bottom-left corner -- ``(0,0)``,
+    ``(h,0)``, ``(h,h)``, ``(0,h)`` -- and the 8x8 matrix's degrees of freedom
+    are interleaved ``[u0x, u0y, u1x, u1y, u2x, u2y, u3x, u3y]``.
+
+    Assembled by 2x2 Gauss quadrature (the standard exact integration for a
+    bilinear quad's stiffness, since the strain-displacement product is at
+    most bilinear in each natural coordinate), the textbook formula behind
+    SIMP topology optimization codes such as Andreassen et al. 2011's 88-line
+    implementation. This implementation derives the matrix from quadrature
+    rather than transcribing a closed-form 8x8 array, and is checked in
+    ``tests/test_elasticity.py`` for symmetry and the expected null space (the
+    three planar rigid-body modes: two translations, one rotation).
+    """
+    E, nu = float(young_modulus), float(poisson_ratio)
+    # Plane-stress constitutive matrix relating stress to engineering strain
+    # (exx, eyy, gamma_xy).
+    C = (E / (1.0 - nu**2)) * np.array(
+        [
+            [1.0, nu, 0.0],
+            [nu, 1.0, 0.0],
+            [0.0, 0.0, (1.0 - nu) / 2.0],
+        ]
+    )
+    gp = 1.0 / np.sqrt(3.0)
+    gauss_points = [(-gp, -gp), (gp, -gp), (gp, gp), (-gp, gp)]
+    # Natural coordinates of the four nodes, same order as the docstring.
+    node_xi = np.array([-1.0, 1.0, 1.0, -1.0])
+    node_eta = np.array([-1.0, -1.0, 1.0, 1.0])
+    # Jacobian of the map from natural coords [-1,1]^2 to physical [0,h]^2 is
+    # constant (h/2 on the diagonal) for this square element.
+    j = h / 2.0
+    det_j = j * j
+    inv_j = 1.0 / j
+
+    K = np.zeros((8, 8))
+    for xi, eta in gauss_points:
+        dN_dxi = 0.25 * node_xi * (1.0 + node_eta * eta)
+        dN_deta = 0.25 * node_eta * (1.0 + node_xi * xi)
+        dN_dx = inv_j * dN_dxi
+        dN_dy = inv_j * dN_deta
+        B = np.zeros((3, 8))
+        for i in range(4):
+            B[0, 2 * i] = dN_dx[i]
+            B[1, 2 * i + 1] = dN_dy[i]
+            B[2, 2 * i] = dN_dy[i]
+            B[2, 2 * i + 1] = dN_dx[i]
+        # Gauss weights are 1 for the 2-point rule on each axis.
+        K += (B.T @ C @ B) * det_j
+    return K

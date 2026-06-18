@@ -21,6 +21,7 @@ from morphos.physics.oracle import PhysicsOracle, PhysicsResult
 from morphos.physics.analytic import AnalyticOracle
 from morphos.physics.heat import HeatConductionOracle
 from morphos.physics.modal import ModalOracle
+from morphos.physics.elasticity import ElasticityOracle
 from morphos.geometry.kernel import GeometryKernel
 from morphos.geometry.numpy_voxel import VoxelKernel
 from morphos.manufacturing.constraints import (
@@ -50,6 +51,7 @@ __all__ = [
     "AnalyticOracle",
     "HeatConductionOracle",
     "ModalOracle",
+    "ElasticityOracle",
     "GeometryKernel",
     "VoxelKernel",
     "ManufacturabilityConstraint",
