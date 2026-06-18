@@ -16,7 +16,7 @@ native ``Voxels_bIsInside``, or the C# BlackWhite slice mode). Until that is
 wired and FD/geometry-verified, this module returns the raw band only.
 
 The native library directory is resolved from ``$PICOGK_NATIVE_DIR`` if set, else
-the conventional sibling checkout ``~/ai-agent/PicoGK/native/<platform>``.
+the vendored kernel at ``morphos/vendor/PicoGK/native/<platform>``.
 """
 
 from __future__ import annotations
@@ -44,7 +44,10 @@ def _native_dir() -> Path:
     env = os.environ.get("PICOGK_NATIVE_DIR")
     if env:
         return Path(env)
-    return Path.home() / "ai-agent" / "PicoGK" / "native" / _platform_subdir()
+    # Vendored kernel: morphos/vendor/PicoGK/native/<platform>, resolved relative
+    # to this module (src/morphos/geometry/_picogk_native.py -> repo root at [3]).
+    repo_root = Path(__file__).resolve().parents[3]
+    return repo_root / "vendor" / "PicoGK" / "native" / _platform_subdir()
 
 
 def _library_path() -> Path:
