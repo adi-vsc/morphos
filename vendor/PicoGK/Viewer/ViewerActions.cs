@@ -1,0 +1,499 @@
+﻿//
+// SPDX-License-Identifier: Apache-2.0
+//
+// PicoGK ("peacock") is a compact software kernel for computational geometry,
+// specifically for use in Computational Engineering Models (CEM).
+//
+// For more information, please visit https://picogk.org
+// 
+// PicoGK is developed and maintained by LEAP 71 - © 2023-2026 by LEAP 71
+// https://leap71.com
+//
+// Computational Engineering will profoundly change our physical world in the
+// years ahead. Thank you for being part of the journey.
+//
+// We have developed this library to be used widely, for both commercial and
+// non-commercial projects alike. Therefore, we have released it under a 
+// permissive open-source license.
+//
+// The foundation of PicoGK is a thin layer on top of the powerful open-source
+// OpenVDB project, which in turn uses many other Free and Open Source Software
+// libraries. We are grateful to be able to stand on the shoulders of giants.
+//
+// LEAP 71 licenses this file to you under the Apache License, Version 2.0
+// (the "License"); you may not use this file except in compliance with the
+// License. You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, THE SOFTWARE IS
+// PROVIDED “AS IS”, WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED.
+//
+// See the License for the specific language governing permissions and
+// limitations under the License.   
+//
+
+using System.Numerics;
+using PicoGK.Numerics;
+
+namespace PicoGK
+{
+    public partial class Viewer
+    {
+        /// <summary>
+        /// An abstract interface for viewer actions
+        /// </summary>
+        public interface IViewerAction
+        {
+            /// <summary>
+            /// Called from inside the main viewer thread to execute the action
+            /// </summary>
+            /// <param name="oViewer">Viewer object to work with</param>
+            void Do(Viewer oViewer);
+        };
+
+        Queue<IViewerAction> m_oActions = new();
+
+        class SetGroupVisibleAction : IViewerAction
+        {
+            public SetGroupVisibleAction(   int nGroupID,
+                                            bool bVisible)
+            {
+                m_nGroupID = nGroupID;
+                m_bVisible = bVisible;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _SetGroupVisible(   oViewer.hThis,
+                                    m_nGroupID,
+                                    m_bVisible);
+            }
+
+            int m_nGroupID;
+            bool m_bVisible;
+        }
+
+        class SetGroupMaterialAction : IViewerAction
+        {
+            public SetGroupMaterialAction(  int         nGroupID,
+                                            ColorFloat  clr,
+                                            float       fMetallic,
+                                            float       fRoughness)
+            {
+                m_nGroupID = nGroupID;
+                m_clr = clr;
+                m_fMetallic = fMetallic;
+                m_fRoughness = fRoughness;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _SetGroupMaterial(  oViewer.hThis,
+                                    m_nGroupID,
+                                    m_clr,
+                                    m_fMetallic,
+                                    m_fRoughness);
+            }
+
+            int         m_nGroupID;
+            ColorFloat  m_clr;
+            float       m_fMetallic;
+            float       m_fRoughness;
+        }
+
+        class SetGroupMatrixAction : IViewerAction
+        {
+            public SetGroupMatrixAction(    int nGroupID,
+                                            Matrix4x4 mat)
+            {
+                m_nGroupID = nGroupID;
+                m_mat = mat;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _SetGroupMatrix(    oViewer.hThis,
+                                    m_nGroupID,
+                                    m_mat);
+            }
+
+            int         m_nGroupID;
+            Matrix4x4   m_mat;
+        }
+
+        class EnableGroupOverhangWarningAction : IViewerAction
+        {
+            public EnableGroupOverhangWarningAction(    int nGroupID,
+                                                        Overhang uWarning,
+                                                        Overhang uError)
+            {
+                m_nGroupID  = nGroupID;
+                m_uWarning  = uWarning;
+                m_uError    = uError;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _EnableGroupWarnOverhang(   oViewer.hThis,
+                                            m_nGroupID,
+                                            m_uWarning.fNormalized,
+                                            m_uError.fNormalized);
+            }
+
+            int m_nGroupID;
+            Overhang m_uWarning;
+            Overhang m_uError;
+        }
+
+        class DisableGroupOverhangWarningAction : IViewerAction
+        {
+            public DisableGroupOverhangWarningAction(int nGroupID)
+            {
+                m_nGroupID      = nGroupID;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _DisableGroupWarnOverhang(  oViewer.hThis,
+                                            m_nGroupID);
+            }
+
+            int m_nGroupID;
+        }
+
+        class RequestUpdateAction : IViewerAction
+        {
+            public RequestUpdateAction()
+            {
+                
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _RequestUpdate(oViewer.hThis);
+            }
+        }
+
+        class RequestScreenShotAction : IViewerAction
+        {
+            public RequestScreenShotAction(string strScreenShotPath)
+            {
+                m_strScreenShotPath = strScreenShotPath;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _RequestScreenShot( oViewer.hThis,
+                                    m_strScreenShotPath);
+            }
+
+            string m_strScreenShotPath;
+        }
+
+        
+        class AddVoxelsAction : IViewerAction
+        {
+            public AddVoxelsAction( Voxels vox,
+                                    int nGroupID)
+            {
+                m_vox = vox;
+                m_nGroupID = nGroupID;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _AddVoxels( m_vox.lib.hThis,
+                            oViewer.hThis,
+                            m_nGroupID,
+                            m_vox.hThis);
+            }
+         
+            Voxels m_vox;
+            int m_nGroupID;
+        }
+
+        class RemoveVoxelsAction : IViewerAction
+        {
+            public RemoveVoxelsAction(Voxels vox)
+            {
+                m_vox = vox;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _RemoveVoxels(  m_vox.lib.hThis,
+                                oViewer.hThis,
+                                m_vox.hThis);
+            }
+
+            Voxels m_vox;
+
+        }
+
+        class SetVoxelsMatrixAction : IViewerAction
+        {
+            public SetVoxelsMatrixAction(   Voxels vox,
+                                            in Matrix4x4 mat)
+            {
+                m_vox   = vox;
+                m_mat   = mat;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _SetVoxelsMatrix(   m_vox.lib.hThis,
+                                    oViewer.hThis,
+                                    m_vox.hThis,
+                                    m_mat);
+            }
+
+            Voxels      m_vox;
+            Matrix4x4   m_mat;
+        }
+
+        class AddMeshAction : IViewerAction
+        {
+            public AddMeshAction(   Mesh msh,
+                                    int nGroupID)
+            {
+                m_msh = msh;
+                m_nGroupID = nGroupID;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _AddMesh(   m_msh.lib.hThis,
+                            oViewer.hThis,
+                            m_nGroupID,
+                            m_msh.hThis);
+            }
+
+            Mesh m_msh;
+            int m_nGroupID;
+        }
+
+        class RemoveMeshAction : IViewerAction
+        {
+            public RemoveMeshAction(Mesh msh)
+            {
+                m_msh = msh;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _RemoveMesh(    m_msh.lib.hThis,
+                                oViewer.hThis,
+                                m_msh.hThis);
+            }
+
+            Mesh m_msh;
+        }
+
+        class SetMeshMatrixAction : IViewerAction
+        {
+            public SetMeshMatrixAction(   Mesh msh,
+                                          in Matrix4x4 mat)
+            {
+                m_msh   = msh;
+                m_mat   = mat;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _SetMeshMatrix( m_msh.lib.hThis,
+                                oViewer.hThis,
+                                m_msh.hThis,
+                                m_mat);
+            }
+
+            Mesh        m_msh;
+            Matrix4x4   m_mat;
+        }
+
+        class AddPolyLineAction : IViewerAction
+        {
+            public AddPolyLineAction(   PolyLine poly,
+                                        int nGroupID)
+            {
+                m_poly = poly;
+                m_nGroupID = nGroupID;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _AddPolyLine(   m_poly.lib.hThis,
+                                oViewer.hThis,
+                                m_nGroupID,
+                                m_poly.hThis);
+
+            }
+
+            PolyLine m_poly;
+            int m_nGroupID;
+        }
+
+        class RemovePolyLineAction : IViewerAction
+        {
+            public RemovePolyLineAction(PolyLine poly)
+            {
+                m_poly = poly;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _RemovePolyLine(    m_poly.lib.hThis,
+                                    oViewer.hThis,
+                                    m_poly.hThis);
+            }
+
+            PolyLine m_poly;
+        }
+
+        class SetPolyLineMatrixAction : IViewerAction
+        {
+            public SetPolyLineMatrixAction( PolyLine poly,
+                                            in Matrix4x4 mat)
+            {
+                m_poly  = poly;
+                m_mat   = mat;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                _SetPolyLineMatrix( m_poly.lib.hThis,
+                                    oViewer.hThis,
+                                    m_poly.hThis,
+                                    m_mat);
+            }
+
+            PolyLine    m_poly;
+            Matrix4x4   m_mat;
+        }
+
+        class RemoveAllObjectsAction : IViewerAction
+        {
+            public void Do(Viewer oViewer)
+            {
+                _RemoveAllObjects(oViewer.hThis);
+            }
+        }
+
+        class LoadLightSetupAction : IViewerAction
+        {
+            public LoadLightSetupAction(    ILog xLog,
+                                            byte [] abyDiffuseDds,
+                                            byte [] abySpecularDds)
+            {
+                m_xLog              = xLog;
+                m_abyDiffuseDds     = abyDiffuseDds;
+                m_abySpecularDds    = abySpecularDds;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                if (!_bLoadLightSetup(  oViewer.hThis,
+                                        m_abyDiffuseDds,
+                                        m_abyDiffuseDds.Length,
+                                        m_abySpecularDds,
+                                        m_abySpecularDds.Length))
+                {
+                    m_xLog.Log($"Failed to load light setup");
+                }
+            }
+
+            ILog m_xLog;
+            byte [] m_abyDiffuseDds;
+            byte [] m_abySpecularDds;
+        }
+
+        class RotateToAction : IViewerAction
+        {
+            public RotateToAction(Quaternion qTo)
+            {
+                m_qTo = qTo;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                oViewer.RemoveAllAnimations();
+
+                Animation.IAction xAction
+                    = new AnimViewRotate(   oViewer,
+                                            oViewer.qOrientation,
+                                            m_qTo);
+
+                Animation oAnim
+                    = new Animation(    xAction, 0.7f,
+                                        Animation.EType.Once,
+                                        Easing.EEasing.CUBIC_OUT);
+
+                oViewer.AddAnimation(oAnim);
+            }
+
+            Quaternion m_qTo;
+        }
+
+        class SpinAction : IViewerAction
+        {
+            public SpinAction(  Vector3 vecSpinAxis,
+                                float fSpinAngleRad = float.Pi)
+            {
+                m_vecSpinAxis   = vecSpinAxis;
+                m_fSpinAngle    = fSpinAngleRad;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                oViewer.RemoveAllAnimations();
+
+                Animation.IAction xAction
+                    = new AnimViewRotate(   oViewer,
+                                            oViewer.qOrientation,
+                                            oViewer.qOrientation * Quaternion.CreateFromAxisAngle(m_vecSpinAxis, m_fSpinAngle));
+
+                float fSpeed = 3f * float.Abs(m_fSpinAngle / float.Pi);
+
+                Animation oAnim
+                    = new Animation(    xAction, fSpeed,
+                                        Animation.EType.Once,
+                                        Easing.EEasing.SINE_OUT);
+
+                oViewer.AddAnimation(oAnim);
+            }
+
+            Vector3 m_vecSpinAxis;
+            float   m_fSpinAngle;
+        }
+
+        class ZoomToFitAction : IViewerAction
+        {
+            public ZoomToFitAction(Quaternion qSet)
+            {
+                m_qSet = qSet;
+            }
+
+            public void Do(Viewer oViewer)
+            {
+                oViewer.RemoveAllAnimations();
+
+                oViewer.ZoomToFit();
+
+                Animation.IAction xAction
+                    = new AnimViewRotate(   oViewer,
+                                            oViewer.qOrientation,
+                                            m_qSet);
+
+                Animation oAnim
+                    = new Animation(    xAction, 0.5f,
+                                        Animation.EType.Once,
+                                        Easing.EEasing.SINE_OUT);
+
+                oViewer.AddAnimation(oAnim);
+            }
+
+            Quaternion m_qSet;
+        }
+    }
+}
+    

@@ -27,3 +27,15 @@ runs/
 # OS
 .DS_Store
 Thumbs.db
+
+# Consolidation areas (kept on disk as the single home, off the public engine surface)
+# Internal strategy docs never ship in a public repo.
+docs/strategy/
+# Absorbed but not-yet-wired code, preserved to mine into backends later.
+reference/
+# Worked case studies (bio, deprioritized for now).
+applications/
+# Vendored kernel: keep source + LICENSE tracked, exclude heavy native binaries.
+vendor/PicoGK/native/
+vendor/**/obj/
+vendor/**/bin/
