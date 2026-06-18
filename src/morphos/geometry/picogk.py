@@ -27,7 +27,7 @@ from morphos.geometry.kernel import GeometryKernel
 class PicoGKKernel(GeometryKernel):
     """Production PicoGK backend: builds a solid signed-distance Field."""
 
-    def build(self, spec: dict) -> Field:
+    def build(self, spec: dict, picogk_voxel_mm: float | None = None) -> Field:
         if not _native.picogk_available():
             raise RuntimeError(
                 "native PicoGK runtime is not available; set $PICOGK_NATIVE_DIR "
@@ -39,16 +39,46 @@ class PicoGKKernel(GeometryKernel):
             raise ValueError("PicoGKKernel assumes isotropic voxel spacing")
 
         primitive = spec.get("primitive")
-        if primitive != "sphere":
+        voxel_mm = self.spacing[0]
+        # PicoGK can build at a different (still isotropic) voxel size than the
+        # kernel grid requests; default to matching exactly (no resample needed).
+        build_voxel_mm = float(picogk_voxel_mm) if picogk_voxel_mm is not None else voxel_mm
+
+        if primitive == "sphere":
+            vf = _native.sphere_sdf_volume(
+                center_mm=spec["center"], radius_mm=float(spec["radius"]), voxel_mm=build_voxel_mm
+            )
+        elif primitive == "box":
+            vertices, triangles = _native.box_mesh(center=spec["center"], size=spec["size"])
+            vf = _native.mesh_sdf_volume(vertices, triangles, voxel_mm=build_voxel_mm)
+        elif primitive == "cylinder":
+            vertices, triangles = _native.cylinder_mesh(
+                center=spec["center"],
+                axis=spec["axis"],
+                radius=float(spec["radius"]),
+                height=float(spec["height"]),
+                segments=int(spec.get("segments", 32)),
+            )
+            vf = _native.mesh_sdf_volume(vertices, triangles, voxel_mm=build_voxel_mm)
+        else:
             raise ValueError(f"unsupported PicoGK primitive: {primitive!r}")
 
-        voxel_mm = self.spacing[0]
-        vf = _native.sphere_sdf_volume(
-            center_mm=spec["center"], radius_mm=float(spec["radius"]), voxel_mm=voxel_mm
-        )
         solid = _native.solidify(vf.volume, vf.background)  # voxel units, (nz, ny, nx)
 
-        values = self._place_on_grid(solid, vf.origin, vf.background) * voxel_mm
+        zoom_factor = build_voxel_mm / voxel_mm
+        if abs(zoom_factor - 1.0) > 1e-9:
+            # Resample PicoGK's own block onto the kernel's requested spacing
+            # before placement: the array gets denser/sparser by zoom_factor,
+            # and the distance values (still in build_voxel_mm units) need the
+            # same rescale to read correctly in voxel_mm units afterwards.
+            solid = _native.resample_volume(solid, zoom_factor) * zoom_factor
+            origin = _native.resample_origin(vf.origin, zoom_factor)
+            background = vf.background * zoom_factor
+        else:
+            origin = vf.origin
+            background = vf.background
+
+        values = self._place_on_grid(solid, origin, background) * voxel_mm
         return Field(values, self.spacing)
 
     def _place_on_grid(self, solid, origin, background) -> np.ndarray:
