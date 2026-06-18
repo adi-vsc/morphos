@@ -31,6 +31,7 @@ from morphos.manufacturing.constraints import (
     ManufacturabilityConstraint,
     MinFeatureSize,
     Connectivity,
+    Overhang,
 )
 
 __version__ = "0.0.1"
@@ -66,4 +67,5 @@ __all__ = [
     "ManufacturabilityConstraint",
     "MinFeatureSize",
     "Connectivity",
+    "Overhang",
 ]
