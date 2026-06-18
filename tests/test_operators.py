@@ -10,8 +10,10 @@ import pytest
 from scipy import sparse
 
 from morphos.physics.operators import (
+    hex8_diffusion_stiffness,
     hex8_stiffness,
     interior_laplacian,
+    q4_diffusion_stiffness,
     q4_plane_stress_stiffness,
 )
 
@@ -171,4 +173,80 @@ def test_hex8_stiffness_matches_independent_quadrature():
         K += (B.T @ C @ B) * det_j
 
     got = hex8_stiffness(young_modulus=E, poisson_ratio=nu, h=h)
+    assert np.allclose(got, K, atol=1e-10)
+
+
+def test_q4_diffusion_stiffness_is_symmetric():
+    K = q4_diffusion_stiffness(conductivity=1.0, h=1.0)
+    assert K.shape == (4, 4)
+    assert np.allclose(K, K.T, atol=1e-12)
+
+
+def test_q4_diffusion_stiffness_null_space_is_the_constant_mode():
+    # A uniform potential has zero gradient everywhere, so K must annihilate
+    # exactly the constant vector (1 of 4 modes) and be PSD otherwise.
+    K = q4_diffusion_stiffness(conductivity=1.0, h=1.0)
+    eigvals = np.linalg.eigvalsh(K)
+    n_zero = np.sum(np.abs(eigvals) < 1e-9)
+    assert n_zero == 1
+    assert np.all(eigvals > -1e-9)
+    assert np.allclose(K @ np.ones(4), 0.0, atol=1e-10)
+
+
+def test_q4_diffusion_stiffness_scales_linearly_with_conductivity():
+    K1 = q4_diffusion_stiffness(conductivity=1.0, h=1.0)
+    K2 = q4_diffusion_stiffness(conductivity=2.5, h=1.0)
+    assert np.allclose(K2, 2.5 * K1, atol=1e-12)
+
+
+def test_q4_diffusion_stiffness_matches_independent_quadrature():
+    k, h = 1.7, 0.6
+    gp = 1.0 / np.sqrt(3.0)
+    pts = [(-gp, -gp), (gp, -gp), (gp, gp), (-gp, gp)]
+    node_xi = np.array([-1, 1, 1, -1], dtype=float)
+    node_eta = np.array([-1, -1, 1, 1], dtype=float)
+    inv_j = 2.0 / h
+    det_j = (h / 2.0) ** 2
+    K = np.zeros((4, 4))
+    for xi, eta in pts:
+        dN_dxi = 0.25 * node_xi * (1 + node_eta * eta)
+        dN_deta = 0.25 * node_eta * (1 + node_xi * xi)
+        G = np.vstack([inv_j * dN_dxi, inv_j * dN_deta])  # (2,4)
+        K += k * (G.T @ G) * det_j
+    got = q4_diffusion_stiffness(conductivity=k, h=h)
+    assert np.allclose(got, K, atol=1e-10)
+
+
+def test_hex8_diffusion_stiffness_is_symmetric():
+    K = hex8_diffusion_stiffness(conductivity=1.0, h=1.0)
+    assert K.shape == (8, 8)
+    assert np.allclose(K, K.T, atol=1e-12)
+
+
+def test_hex8_diffusion_stiffness_null_space_is_the_constant_mode():
+    K = hex8_diffusion_stiffness(conductivity=1.0, h=1.0)
+    eigvals = np.linalg.eigvalsh(K)
+    n_zero = np.sum(np.abs(eigvals) < 1e-8)
+    assert n_zero == 1
+    assert np.all(eigvals > -1e-8)
+    assert np.allclose(K @ np.ones(8), 0.0, atol=1e-9)
+
+
+def test_hex8_diffusion_stiffness_matches_independent_quadrature():
+    k, h = 1.3, 0.8
+    node_xi = np.array([-1, 1, 1, -1, -1, 1, 1, -1], dtype=float)
+    node_eta = np.array([-1, -1, 1, 1, -1, -1, 1, 1], dtype=float)
+    node_zeta = np.array([-1, -1, -1, -1, 1, 1, 1, 1], dtype=float)
+    gp = 1.0 / np.sqrt(3.0)
+    pts = [(a, b, c) for a in (-gp, gp) for b in (-gp, gp) for c in (-gp, gp)]
+    inv_j = 2.0 / h
+    det_j = (h / 2.0) ** 3
+    K = np.zeros((8, 8))
+    for xi, eta, zeta in pts:
+        dN_dxi = 0.125 * node_xi * (1 + node_eta * eta) * (1 + node_zeta * zeta)
+        dN_deta = 0.125 * node_eta * (1 + node_xi * xi) * (1 + node_zeta * zeta)
+        dN_dzeta = 0.125 * node_zeta * (1 + node_xi * xi) * (1 + node_eta * eta)
+        G = np.vstack([inv_j * dN_dxi, inv_j * dN_deta, inv_j * dN_dzeta])  # (3,8)
+        K += k * (G.T @ G) * det_j
+    got = hex8_diffusion_stiffness(conductivity=k, h=h)
     assert np.allclose(got, K, atol=1e-10)

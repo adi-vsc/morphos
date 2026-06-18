@@ -199,3 +199,59 @@ def hex8_stiffness(young_modulus: float, poisson_ratio: float, h: float) -> np.n
         # Gauss weights are 1 for the 2-point rule on each axis.
         K += (B.T @ C @ B) * det_j
     return K
+
+
+def q4_diffusion_stiffness(conductivity: float, h: float) -> np.ndarray:
+    """Stiffness matrix of one bilinear-quad (Q4) scalar diffusion element.
+
+    The scalar-field analogue of :func:`q4_plane_stress_stiffness`: one degree
+    of freedom per node (a potential -- temperature, pressure, or, as used by
+    the Darcy-flow channel-design oracle, a flow potential) rather than a
+    vector displacement. ``K_e[i, j] = integral k * grad(N_i) . grad(N_j)``,
+    isotropic conductivity ``k``, same square element, node order, and 2x2
+    Gauss quadrature as the elasticity element. Checked in
+    ``tests/test_operators.py`` against an independent re-derivation, for
+    symmetry, and for the expected null space (the one constant-potential mode).
+    """
+    k, h = float(conductivity), float(h)
+    gp = 1.0 / np.sqrt(3.0)
+    gauss_points = [(-gp, -gp), (gp, -gp), (gp, gp), (-gp, gp)]
+    node_xi = np.array([-1.0, 1.0, 1.0, -1.0])
+    node_eta = np.array([-1.0, -1.0, 1.0, 1.0])
+    j = h / 2.0
+    det_j = j * j
+    inv_j = 1.0 / j
+
+    K = np.zeros((4, 4))
+    for xi, eta in gauss_points:
+        dN_dxi = 0.25 * node_xi * (1.0 + node_eta * eta)
+        dN_deta = 0.25 * node_eta * (1.0 + node_xi * xi)
+        G = np.vstack([inv_j * dN_dxi, inv_j * dN_deta])  # (2, 4)
+        K += k * (G.T @ G) * det_j
+    return K
+
+
+def hex8_diffusion_stiffness(conductivity: float, h: float) -> np.ndarray:
+    """Stiffness matrix of one trilinear hex (Hex8) scalar diffusion element.
+
+    The 3D analogue of :func:`q4_diffusion_stiffness`, sharing node order,
+    shape functions, and quadrature with :func:`hex8_stiffness`.
+    """
+    k, h = float(conductivity), float(h)
+    gp = 1.0 / np.sqrt(3.0)
+    gauss_points = [(a, b, c) for a in (-gp, gp) for b in (-gp, gp) for c in (-gp, gp)]
+    node_xi = np.array([-1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0])
+    node_eta = np.array([-1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0])
+    node_zeta = np.array([-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0])
+    j = h / 2.0
+    det_j = j * j * j
+    inv_j = 1.0 / j
+
+    K = np.zeros((8, 8))
+    for xi, eta, zeta in gauss_points:
+        dN_dxi = 0.125 * node_xi * (1.0 + node_eta * eta) * (1.0 + node_zeta * zeta)
+        dN_deta = 0.125 * node_eta * (1.0 + node_xi * xi) * (1.0 + node_zeta * zeta)
+        dN_dzeta = 0.125 * node_zeta * (1.0 + node_xi * xi) * (1.0 + node_eta * eta)
+        G = np.vstack([inv_j * dN_dxi, inv_j * dN_deta, inv_j * dN_dzeta])  # (3, 8)
+        K += k * (G.T @ G) * det_j
+    return K
