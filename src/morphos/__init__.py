@@ -23,6 +23,8 @@ from morphos.physics.heat import HeatConductionOracle
 from morphos.physics.modal import ModalOracle
 from morphos.physics.elasticity import ElasticityOracle
 from morphos.physics.darcy import DarcyFlowOracle
+from morphos.intent import DesignIntent, CantileverIntent, ChannelIntent
+from morphos.report import PerformanceReport, build_report
 from morphos.geometry.kernel import GeometryKernel
 from morphos.geometry.numpy_voxel import VoxelKernel
 from morphos.manufacturing.constraints import (
@@ -54,6 +56,11 @@ __all__ = [
     "ModalOracle",
     "ElasticityOracle",
     "DarcyFlowOracle",
+    "DesignIntent",
+    "CantileverIntent",
+    "ChannelIntent",
+    "PerformanceReport",
+    "build_report",
     "GeometryKernel",
     "VoxelKernel",
     "ManufacturabilityConstraint",
