@@ -69,5 +69,6 @@ def test_field_grid_matches_kernel():
 def test_picogk_backend_is_explicit_not_silent():
     k = PicoGKKernel(grid_shape=(4, 4, 4), spacing=1.0)
     assert isinstance(k, GeometryKernel)
-    with pytest.raises(NotImplementedError):
-        k.build({"primitive": "sphere", "center": (1, 1, 1), "radius": 1.0})
+    # explicit failure (unknown primitive, or no native runtime), never silent wrong geometry
+    with pytest.raises((ValueError, RuntimeError)):
+        k.build({"primitive": "torus"})

@@ -30,9 +30,13 @@ def test_heat_oracle_is_a_physics_oracle():
     assert o.provides_gradient is True
 
 
-def test_only_2d_supported():
+def test_accepts_2d_and_3d_but_rejects_lower():
+    # 2D and 3D grids are both supported now
+    HeatConductionOracle(target=np.zeros((4, 4)))
+    HeatConductionOracle(target=np.zeros((4, 4, 4)))
+    # a 1D grid has no interior cross-section and is rejected
     with pytest.raises(ValueError):
-        HeatConductionOracle(target=np.zeros((4, 4, 4)))
+        HeatConductionOracle(target=np.zeros(4))
 
 
 def test_positive_source_makes_positive_interior_temperature():

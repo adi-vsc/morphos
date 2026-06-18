@@ -20,6 +20,7 @@ from morphos.optimize.parametric import ParametricOptimizer
 from morphos.physics.oracle import PhysicsOracle, PhysicsResult
 from morphos.physics.analytic import AnalyticOracle
 from morphos.physics.heat import HeatConductionOracle
+from morphos.physics.modal import ModalOracle
 from morphos.geometry.kernel import GeometryKernel
 from morphos.geometry.numpy_voxel import VoxelKernel
 from morphos.manufacturing.constraints import (
@@ -48,6 +49,7 @@ __all__ = [
     "PhysicsResult",
     "AnalyticOracle",
     "HeatConductionOracle",
+    "ModalOracle",
     "GeometryKernel",
     "VoxelKernel",
     "ManufacturabilityConstraint",
