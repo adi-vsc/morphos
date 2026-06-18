@@ -39,13 +39,27 @@ class PicoGKKernel(GeometryKernel):
             raise ValueError("PicoGKKernel assumes isotropic voxel spacing")
 
         primitive = spec.get("primitive")
-        if primitive != "sphere":
+        voxel_mm = self.spacing[0]
+
+        if primitive == "sphere":
+            vf = _native.sphere_sdf_volume(
+                center_mm=spec["center"], radius_mm=float(spec["radius"]), voxel_mm=voxel_mm
+            )
+        elif primitive == "box":
+            vertices, triangles = _native.box_mesh(center=spec["center"], size=spec["size"])
+            vf = _native.mesh_sdf_volume(vertices, triangles, voxel_mm=voxel_mm)
+        elif primitive == "cylinder":
+            vertices, triangles = _native.cylinder_mesh(
+                center=spec["center"],
+                axis=spec["axis"],
+                radius=float(spec["radius"]),
+                height=float(spec["height"]),
+                segments=int(spec.get("segments", 32)),
+            )
+            vf = _native.mesh_sdf_volume(vertices, triangles, voxel_mm=voxel_mm)
+        else:
             raise ValueError(f"unsupported PicoGK primitive: {primitive!r}")
 
-        voxel_mm = self.spacing[0]
-        vf = _native.sphere_sdf_volume(
-            center_mm=spec["center"], radius_mm=float(spec["radius"]), voxel_mm=voxel_mm
-        )
         solid = _native.solidify(vf.volume, vf.background)  # voxel units, (nz, ny, nx)
 
         values = self._place_on_grid(solid, vf.origin, vf.background) * voxel_mm
