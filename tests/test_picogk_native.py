@@ -59,3 +59,35 @@ def test_surface_voxels_sit_near_the_requested_radius_on_average():
     dist = np.sqrt((wx - center[0]) ** 2 + (wy - center[1]) ** 2 + (wz - center[2]) ** 2)
     # the mean surface radius is correct even though individual band voxels scatter
     assert dist.mean() == pytest.approx(R, abs=0.5)
+
+
+def test_mesh_sdf_volume_box_bounding_box_matches_size_and_voxel_size():
+    # PicoGK has no native box primitive; box_mesh + Voxels_RenderMesh is the
+    # real PicoGK C# path (Mesh + Voxels_RenderMesh) for shapes without one.
+    vertices, triangles = pk.box_mesh(center=(10, 10, 10), size=(10.0, 10.0, 10.0))
+    res = pk.mesh_sdf_volume(vertices, triangles, voxel_mm=0.5)
+    nz, ny, nx = res.volume.shape
+    # a 10mm cube at 0.5mm voxels spans ~20 voxels plus a few of band
+    for n in (nx, ny, nz):
+        assert 18 <= n <= 30
+
+
+def test_mesh_sdf_volume_box_field_is_a_narrow_band_with_both_signs():
+    vertices, triangles = pk.box_mesh(center=(10, 10, 10), size=(10.0, 10.0, 10.0))
+    res = pk.mesh_sdf_volume(vertices, triangles, voxel_mm=0.5)
+    sd = res.volume * res.voxel_mm
+    assert sd.min() < 0.0
+    assert sd.max() > 0.0
+
+
+def test_mesh_sdf_volume_cylinder_bounding_box_matches_size():
+    vertices, triangles = pk.cylinder_mesh(
+        center=(10, 10, 10), axis=(0, 0, 1), radius=5.0, height=10.0, segments=32
+    )
+    res = pk.mesh_sdf_volume(vertices, triangles, voxel_mm=0.5)
+    nz, ny, nx = res.volume.shape
+    # a radius-5/height-10mm cylinder at 0.5mm voxels spans ~20 voxels in XY,
+    # ~20 in Z, plus a few voxels of band
+    for n in (nx, ny):
+        assert 18 <= n <= 30
+    assert 18 <= nz <= 30
