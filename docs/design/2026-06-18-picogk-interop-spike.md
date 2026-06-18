@@ -73,8 +73,38 @@ off-center analytic sphere: the solid mask agrees with the analytic sign on
 axis-swap or origin-offset bug cannot hide behind the sphere's symmetry.
 `tests/test_picogk_solidify.py` verifies the fill with no native dependency.
 
-Open follow-ups: more primitives (box, etc.) and resampling when the kernel
-spacing differs from the requested voxel size (today they must match).
+## Box, cylinder, and resampling
+
+PicoGK has no native box or cylinder voxel primitive -- only sphere
+(`Voxels_hCreateSphere`) and capsule (`Voxels_hCreateCapsule`). The real
+PicoGK C# API builds these via a `Mesh` (vertices + triangles) rasterized
+with `Voxels_RenderMesh`; morphos does the same. `box_mesh` and
+`cylinder_mesh` (in `_picogk_native.py`) build the vertex/triangle data in
+plain Python -- a cube cross-checked against the C# `Utils.mshCreateCube`
+layout, and an N-sided capped prism (default 32 segments) for the cylinder.
+`mesh_sdf_volume` binds `Mesh_hCreate`/`Mesh_nAddVertex`/`Mesh_nAddTriangle`,
+`Voxels_hCreate`, and `Voxels_RenderMesh`, then reads the result back through
+the same `Voxels_GetVoxelDimensions`/`Voxels_GetZSlice` path as the sphere
+(refactored into a shared `_read_voxel_field` helper), so the same
+`solidify()` + grid-placement pipeline applies unchanged. `PicoGKKernel.build`
+dispatches `"box"` (center + size) and `"cylinder"` (center + axis + radius +
+height [+ segments]) alongside `"sphere"`.
+
+`PicoGKKernel.build` also no longer requires PicoGK's build voxel size to
+match the kernel grid's spacing exactly. An optional `picogk_voxel_mm`
+argument lets PicoGK build at its own (still isotropic) voxel size;
+`resample_volume` (trilinear, `scipy.ndimage.zoom`) and `resample_origin`
+rescale PicoGK's solid block -- both the array density and the
+signed-distance values themselves, by the same zoom factor -- onto the
+kernel's requested grid before placement. Defaults to the kernel's own
+spacing (a no-op) so existing callers are unaffected.
+
+Verified in `tests/test_picogk_mesh.py` (mesh geometry, no native
+dependency: closed, correctly wound, correct analytic volume),
+`tests/test_picogk_resample.py` (resampling math, no native dependency:
+shape scaling, analytic-sphere agreement, volume conservation), and
+skip-guarded additions to `tests/test_picogk_native.py` and
+`tests/test_picogk_kernel.py` for the live-runtime path.
 
 ## Note on scope
 
