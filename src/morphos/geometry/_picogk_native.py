@@ -375,6 +375,37 @@ def _read_voxel_field(lib, h_lib, h_vox, voxel_mm: float) -> VoxelField:
     )
 
 
+def resample_volume(volume: np.ndarray, zoom_factor: float) -> np.ndarray:
+    """Trilinearly resample a PicoGK voxel block onto a different voxel size.
+
+    PicoGK builds at whatever voxel size its ``Library`` instance was created
+    with; the kernel grid the caller actually wants may ask for a different
+    (still isotropic) spacing. ``zoom_factor = picogk_voxel_mm / kernel_voxel_mm``:
+    a factor > 1 means the kernel grid is finer than PicoGK's (each PicoGK
+    voxel becomes several kernel voxels), < 1 means coarser.
+
+    A thin wrapper over ``scipy.ndimage.zoom`` with linear (order=1) spline
+    interpolation -- physically appropriate for a signed-distance field, which
+    is roughly linear near the surface and constant in the deep solidified
+    interior/exterior.
+    """
+    from scipy import ndimage
+
+    if zoom_factor == 1.0:
+        return volume.copy()
+    return ndimage.zoom(volume, zoom_factor, order=1, mode="nearest")
+
+
+def resample_origin(origin, zoom_factor: float) -> tuple:
+    """Rescale a PicoGK active-block voxel origin to the resampled grid.
+
+    ``origin`` is in PicoGK voxel units; after :func:`resample_volume` scales
+    the block by ``zoom_factor``, the origin must move to matching kernel-grid
+    voxel units to stay placed correctly.
+    """
+    return tuple(int(round(o * zoom_factor)) for o in origin)
+
+
 def sphere_sdf_volume(center_mm, radius_mm: float, voxel_mm: float = 0.5) -> VoxelField:
     """Build a sphere in PicoGK and return its narrow-band SDF as a VoxelField."""
     lib = _load()

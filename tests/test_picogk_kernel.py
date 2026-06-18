@@ -140,6 +140,46 @@ def test_build_cylinder_is_a_sign_correct_solid():
     assert agreement > 0.999
 
 
+def test_build_resamples_when_picogk_voxel_size_differs_from_kernel_spacing():
+    # Kernel grid wants 0.5mm voxels; PicoGK is asked to build at a different
+    # (finer) native voxel size, exercising the resample_volume/_origin path
+    # in PicoGKKernel.build instead of the exact-match fast path.
+    grid_shape = (40, 40, 40)
+    spacing = 0.5
+    kernel = PicoGKKernel(grid_shape, spacing)
+    center = (11.0, 9.0, 12.0)
+    radius = 6.0
+    field = kernel.build(
+        {"primitive": "sphere", "center": center, "radius": radius}, picogk_voxel_mm=0.25
+    )
+
+    assert field.shape == grid_shape
+    assert field.spacing == (spacing, spacing, spacing)
+
+    sd = _analytic_sphere_sdf(kernel, center, radius)
+    got_solid = field.values < 0.0
+    true_solid = sd < 0.0
+    away = np.abs(sd) > spacing
+    agreement = float(np.mean(got_solid[away] == true_solid[away]))
+    assert agreement > 0.99
+
+
+def test_build_resampled_volume_matches_analytic_volume():
+    grid_shape = (40, 40, 40)
+    spacing = 0.5
+    kernel = PicoGKKernel(grid_shape, spacing)
+    center = (10.0, 10.0, 10.0)
+    radius = 6.0
+    field = kernel.build(
+        {"primitive": "sphere", "center": center, "radius": radius}, picogk_voxel_mm=0.25
+    )
+
+    solid_voxels = int(np.sum(field.values < 0.0))
+    got_volume = solid_voxels * (spacing**3)
+    analytic_volume = (4.0 / 3.0) * np.pi * radius**3
+    assert got_volume == pytest.approx(analytic_volume, rel=0.05)
+
+
 def test_build_cylinder_along_tilted_axis_is_a_sign_correct_solid():
     grid_shape = (44, 44, 44)
     spacing = 0.5
