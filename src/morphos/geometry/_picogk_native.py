@@ -384,16 +384,27 @@ def resample_volume(volume: np.ndarray, zoom_factor: float) -> np.ndarray:
     a factor > 1 means the kernel grid is finer than PicoGK's (each PicoGK
     voxel becomes several kernel voxels), < 1 means coarser.
 
-    A thin wrapper over ``scipy.ndimage.zoom`` with linear (order=1) spline
-    interpolation -- physically appropriate for a signed-distance field, which
-    is roughly linear near the surface and constant in the deep solidified
-    interior/exterior.
+    Cell-based resample (linear, order=1), physically appropriate for a
+    signed-distance field: roughly linear near the surface, constant in the deep
+    solidified interior/exterior. Voxels are treated as finite cells, not grid
+    endpoints -- output cell ``i`` samples the input at ``(i + 0.5)/zoom - 0.5``
+    (its physical centre), and the output spans the *ceiling* of ``n * zoom``
+    cells so the source block's full extent is covered. This matters when
+    downsampling an odd-sized block (e.g. 53 voxels at zoom 0.5): the endpoint-
+    aligned ``scipy.ndimage.zoom`` default both shifts the sampling by a fraction
+    of a voxel and rounds the size down, shaving a surface shell and biasing the
+    recovered solid volume low by ~10%. The cell-centred form keeps the volume
+    error at the surface-discretisation floor (sub-percent) across zoom factors.
     """
     from scipy import ndimage
 
     if zoom_factor == 1.0:
         return volume.copy()
-    return ndimage.zoom(volume, zoom_factor, order=1, mode="nearest")
+    out_shape = tuple(int(np.ceil(n * zoom_factor - 1e-9)) for n in volume.shape)
+    coords = np.indices(out_shape, dtype=float)
+    for axis in range(volume.ndim):
+        coords[axis] = (coords[axis] + 0.5) / zoom_factor - 0.5
+    return ndimage.map_coordinates(volume, coords, order=1, mode="nearest")
 
 
 def resample_origin(origin, zoom_factor: float) -> tuple:
