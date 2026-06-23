@@ -24,6 +24,7 @@ from morphos.physics.modal import ModalOracle
 from morphos.physics.elasticity import ElasticityOracle
 from morphos.physics.darcy import DarcyFlowOracle
 from morphos.physics.thermoelastic import ThermoElasticOracle
+from morphos.physics.stokes import StokesFlowOracle
 from morphos.intent import DesignIntent, CantileverIntent, ChannelIntent
 from morphos.report import PerformanceReport, build_report
 from morphos.geometry.kernel import GeometryKernel
@@ -59,6 +60,7 @@ __all__ = [
     "ElasticityOracle",
     "DarcyFlowOracle",
     "ThermoElasticOracle",
+    "StokesFlowOracle",
     "DesignIntent",
     "CantileverIntent",
     "ChannelIntent",

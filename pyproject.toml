@@ -24,7 +24,9 @@ iterative = ["pyamg>=5.0"]
 mfg = ["scikit-image>=0.20"]
 # Differentiable-physics backend (JAX port of selected oracles).
 diff = ["jax>=0.4"]
-dev = ["pytest>=7.0", "pyamg>=5.0", "scikit-image>=0.20", "jax>=0.4"]
+# Viscous-flow CFD backend (inf-sup-stable Taylor-Hood Brinkman-Stokes).
+cfd = ["scikit-fem>=9.0"]
+dev = ["pytest>=7.0", "pyamg>=5.0", "scikit-image>=0.20", "jax>=0.4", "scikit-fem>=9.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
