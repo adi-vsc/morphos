@@ -201,6 +201,118 @@ def hex8_stiffness(young_modulus: float, poisson_ratio: float, h: float) -> np.n
     return K
 
 
+def q4_thermoelastic_coupling(
+    young_modulus: float, poisson_ratio: float, thermal_expansion: float, h: float
+) -> np.ndarray:
+    """Thermo-elastic coupling matrix of one Q4 plane-stress element.
+
+    Maps the element's four nodal temperatures to its eight nodal forces:
+    ``L_e = integral B^T (D alpha_th) N dV``, where ``D`` is the same
+    plane-stress constitutive matrix and ``B`` the same strain-displacement
+    operator as :func:`q4_plane_stress_stiffness`, ``alpha_th`` is the
+    free-thermal-strain vector ``alpha * [1, 1, 0]^T`` (isotropic dilation, no
+    shear), and ``N`` are the bilinear shape functions. The thermal load on a
+    body is then ``F_thermal = L (T - T_ref)``: a temperature field drives a
+    mechanical force exactly as in the thermoelastic equilibrium
+    ``K u = F_mech + L (T - T_ref)``.
+
+    Row (force) order matches the 8x8 stiffness DOF order
+    ``[u0x, u0y, ..., u3x, u3y]``; column (temperature) order is the four nodes
+    ``[T0, T1, T2, T3]``. Linear in both ``young_modulus`` and
+    ``thermal_expansion`` (so SIMP scales it by density just like the
+    stiffness). Built from the same 2x2 Gauss quadrature, and gated -- via the
+    assembled coupled gradient -- in ``tests/test_thermoelastic.py``.
+    """
+    E, nu, alpha = float(young_modulus), float(poisson_ratio), float(thermal_expansion)
+    C = (E / (1.0 - nu**2)) * np.array(
+        [
+            [1.0, nu, 0.0],
+            [nu, 1.0, 0.0],
+            [0.0, 0.0, (1.0 - nu) / 2.0],
+        ]
+    )
+    beta = C @ (alpha * np.array([1.0, 1.0, 0.0]))  # thermal "stress" per unit dT
+    gp = 1.0 / np.sqrt(3.0)
+    gauss_points = [(-gp, -gp), (gp, -gp), (gp, gp), (-gp, gp)]
+    node_xi = np.array([-1.0, 1.0, 1.0, -1.0])
+    node_eta = np.array([-1.0, -1.0, 1.0, 1.0])
+    j = h / 2.0
+    det_j = j * j
+    inv_j = 1.0 / j
+
+    L = np.zeros((8, 4))
+    for xi, eta in gauss_points:
+        N = 0.25 * (1.0 + node_xi * xi) * (1.0 + node_eta * eta)
+        dN_dxi = 0.25 * node_xi * (1.0 + node_eta * eta)
+        dN_deta = 0.25 * node_eta * (1.0 + node_xi * xi)
+        dN_dx = inv_j * dN_dxi
+        dN_dy = inv_j * dN_deta
+        B = np.zeros((3, 8))
+        for i in range(4):
+            B[0, 2 * i] = dN_dx[i]
+            B[1, 2 * i + 1] = dN_dy[i]
+            B[2, 2 * i] = dN_dy[i]
+            B[2, 2 * i + 1] = dN_dx[i]
+        L += np.outer(B.T @ beta, N) * det_j
+    return L
+
+
+def hex8_thermoelastic_coupling(
+    young_modulus: float, poisson_ratio: float, thermal_expansion: float, h: float
+) -> np.ndarray:
+    """Thermo-elastic coupling matrix of one Hex8 solid element (24x8).
+
+    The 3D analogue of :func:`q4_thermoelastic_coupling`, sharing constitutive
+    matrix, strain-displacement operator, shape functions, and quadrature with
+    :func:`hex8_stiffness`. Free-thermal-strain vector is
+    ``alpha * [1, 1, 1, 0, 0, 0]^T``.
+    """
+    E, nu, alpha = float(young_modulus), float(poisson_ratio), float(thermal_expansion)
+    lam_c = E / ((1.0 + nu) * (1.0 - 2.0 * nu))
+    C = lam_c * np.array(
+        [
+            [1.0 - nu, nu, nu, 0.0, 0.0, 0.0],
+            [nu, 1.0 - nu, nu, 0.0, 0.0, 0.0],
+            [nu, nu, 1.0 - nu, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, (1.0 - 2.0 * nu) / 2.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, (1.0 - 2.0 * nu) / 2.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, (1.0 - 2.0 * nu) / 2.0],
+        ]
+    )
+    beta = C @ (alpha * np.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0]))
+    gp = 1.0 / np.sqrt(3.0)
+    gauss_points = [(a, b, c) for a in (-gp, gp) for b in (-gp, gp) for c in (-gp, gp)]
+    node_xi = np.array([-1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0])
+    node_eta = np.array([-1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0])
+    node_zeta = np.array([-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0])
+    j = h / 2.0
+    det_j = j * j * j
+    inv_j = 1.0 / j
+
+    L = np.zeros((24, 8))
+    for xi, eta, zeta in gauss_points:
+        N = 0.125 * (1.0 + node_xi * xi) * (1.0 + node_eta * eta) * (1.0 + node_zeta * zeta)
+        dN_dxi = 0.125 * node_xi * (1.0 + node_eta * eta) * (1.0 + node_zeta * zeta)
+        dN_deta = 0.125 * node_eta * (1.0 + node_xi * xi) * (1.0 + node_zeta * zeta)
+        dN_dzeta = 0.125 * node_zeta * (1.0 + node_xi * xi) * (1.0 + node_eta * eta)
+        dN_dx = inv_j * dN_dxi
+        dN_dy = inv_j * dN_deta
+        dN_dz = inv_j * dN_dzeta
+        B = np.zeros((6, 24))
+        for i in range(8):
+            B[0, 3 * i] = dN_dx[i]
+            B[1, 3 * i + 1] = dN_dy[i]
+            B[2, 3 * i + 2] = dN_dz[i]
+            B[3, 3 * i] = dN_dy[i]
+            B[3, 3 * i + 1] = dN_dx[i]
+            B[4, 3 * i + 1] = dN_dz[i]
+            B[4, 3 * i + 2] = dN_dy[i]
+            B[5, 3 * i] = dN_dz[i]
+            B[5, 3 * i + 2] = dN_dx[i]
+        L += np.outer(B.T @ beta, N) * det_j
+    return L
+
+
 def q4_diffusion_stiffness(conductivity: float, h: float) -> np.ndarray:
     """Stiffness matrix of one bilinear-quad (Q4) scalar diffusion element.
 
