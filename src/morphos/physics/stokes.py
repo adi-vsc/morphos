@@ -53,11 +53,12 @@ equal-order Hex8 -- scikit-fem supplies the LBB-stable Hex Taylor-Hood pair.
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, Tuple
+from typing import Callable, Iterable, Literal, Tuple
 
 import numpy as np
 
 from morphos.field import Field
+from morphos.physics._linsolve import solve_linear
 from morphos.physics.oracle import PhysicsOracle, PhysicsResult
 
 # 2D edges (x: left/right, y: bottom/top) plus the 3D z faces (back/front).
@@ -77,6 +78,7 @@ class StokesFlowOracle(PhysicsOracle):
         alpha_max: float = 1e5,
         alpha_min: float = 0.0,
         brinkman_q: float = 0.1,
+        solver: Literal["direct", "iterative", "auto"] = "auto",
     ) -> None:
         """Brinkman-Stokes fluid-TO oracle on a structured 2D quad or 3D hex grid.
 
@@ -103,6 +105,14 @@ class StokesFlowOracle(PhysicsOracle):
             (``rho = 1``).
         brinkman_q:
             Convexity parameter ``q`` of the Borrvall-Petersson interpolation.
+        solver:
+            ``"direct"``, ``"iterative"``, or ``"auto"`` (threshold-based;
+            see :mod:`morphos.physics._linsolve`). The mixed velocity-pressure
+            system is an indefinite saddle point, not SPD, so the iterative
+            path is ILU-preconditioned GMRES rather than SA-AMG-preconditioned
+            CG/GMRES (plain smoothed-aggregation AMG was checked and does not
+            converge on the raw saddle-point operator; ILU+GMRES does, and
+            matches the direct solve to about 1e-13 relative error).
         """
         try:
             import skfem  # noqa: F401
@@ -136,7 +146,9 @@ class StokesFlowOracle(PhysicsOracle):
         self.alpha_max = float(alpha_max)
         self.alpha_min = float(alpha_min)
         self.q = float(brinkman_q)
+        self.solver = solver
         self._cache_h = None
+        self._ilu_cache: list = []
 
     def _alpha(self, rho: np.ndarray) -> np.ndarray:
         q = self.q
@@ -257,7 +269,6 @@ class StokesFlowOracle(PhysicsOracle):
         self._build(h)
 
         from scipy.sparse import bmat
-        from scipy.sparse.linalg import spsolve
 
         ub, pb, rb = self._ub, self._pb, self._rb
         rho = np.clip(field.values, 0.0, 1.0)
@@ -277,7 +288,13 @@ class StokesFlowOracle(PhysicsOracle):
         dofs = np.concatenate([self._dir_dofs, [pin]])
         free = np.setdiff1d(np.arange(NU + NP), dofs)
         rhs = -(K @ x)
-        x[free] += spsolve(K[np.ix_(free, free)].tocsc(), rhs[free])
+        # Indefinite saddle-point system: ILU+GMRES on the iterative path,
+        # not SA-AMG+CG/GMRES (see __init__ docstring).
+        dx, residual_norm, iterations = solve_linear(
+            K[np.ix_(free, free)], rhs[free], solver=self.solver,
+            dof_count=free.size, indefinite=True, cache_holder=self._ilu_cache,
+        )
+        x[free] += dx
 
         u = x[:NU]
         p = x[NU:]
@@ -301,6 +318,8 @@ class StokesFlowOracle(PhysicsOracle):
                 "velocity": self._velocity_grid(u),
                 "pressure": p,
             },
+            residual_norm=residual_norm,
+            solver_iterations=iterations,
         )
 
     def _velocity_grid(self, u: np.ndarray) -> np.ndarray:

@@ -64,13 +64,13 @@ maximizing ``value = -compliance``, exactly mirroring
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Sequence, Tuple
+from typing import Dict, Iterable, Literal, Sequence, Tuple
 
 import numpy as np
 from scipy import sparse
-from scipy.sparse.linalg import spsolve
 
 from morphos.field import Field
+from morphos.physics._linsolve import solve_linear
 from morphos.physics.operators import hex8_stiffness, q4_plane_stress_stiffness
 from morphos.physics.oracle import PhysicsOracle, PhysicsResult
 
@@ -99,6 +99,7 @@ class ElasticityOracle(PhysicsOracle):
         poisson_ratio: float = 0.3,
         penalty: float = 3.0,
         e_min_fraction: float = 1e-9,
+        solver: Literal["direct", "iterative", "auto"] = "auto",
     ) -> None:
         """SIMP compliance oracle: 2D plane-stress (Q4) or 3D solid (Hex8).
 
@@ -124,6 +125,14 @@ class ElasticityOracle(PhysicsOracle):
         e_min_fraction:
             Void-region stiffness floor as a fraction of ``E0``, avoiding a
             singular global stiffness matrix when a cell's density is zero.
+        solver:
+            ``"direct"`` (sparse LU), ``"iterative"`` (AMG-preconditioned CG;
+            ``Kff`` is symmetric positive-definite), or ``"auto"`` (direct
+            below, iterative at/above,
+            :data:`morphos.physics._linsolve.AUTO_ITERATIVE_THRESHOLD` free
+            dofs). The AMG hierarchy is cached and reused across solves as
+            long as the free-dof sparsity pattern (fixed dofs, grid shape)
+            does not change.
         """
         if len(shape) not in (2, 3):
             raise ValueError(
@@ -139,6 +148,8 @@ class ElasticityOracle(PhysicsOracle):
         self.poisson_ratio = float(poisson_ratio)
         self.penalty = float(penalty)
         self.e_min = float(e_min_fraction) * self.young_modulus
+        self.solver = solver
+        self._amg_cache: list = []
 
         # Node-grid extent in the same axis order as `shape` (..., y, x).
         self._nn = tuple(s + 1 for s in self.shape)
@@ -258,7 +269,10 @@ class ElasticityOracle(PhysicsOracle):
         Kff = K[np.ix_(free, free)]
         Ff = self._F[free]
 
-        uf = spsolve(Kff.tocsc(), Ff)
+        uf, residual_norm, iterations = solve_linear(
+            Kff, Ff, solver=self.solver, dof_count=free.size,
+            symmetric=True, cache_holder=self._amg_cache,
+        )
         u = np.zeros(self._n_dof)
         u[free] = uf
 
@@ -283,4 +297,6 @@ class ElasticityOracle(PhysicsOracle):
                 "compliance": compliance,
                 "displacement": displacement,
             },
+            residual_norm=residual_norm,
+            solver_iterations=iterations,
         )

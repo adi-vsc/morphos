@@ -36,13 +36,13 @@ central finite differences and the directional FD gate in ``tests/test_darcy.py`
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Tuple
+from typing import Dict, Iterable, Literal, Tuple
 
 import numpy as np
 from scipy import sparse
-from scipy.sparse.linalg import spsolve
 
 from morphos.field import Field
+from morphos.physics._linsolve import solve_linear
 from morphos.physics.operators import hex8_diffusion_stiffness, q4_diffusion_stiffness
 from morphos.physics.oracle import PhysicsOracle, PhysicsResult
 
@@ -66,6 +66,7 @@ class DarcyFlowOracle(PhysicsOracle):
         permeability0: float = 1.0,
         penalty: float = 3.0,
         k_min_fraction: float = 1e-6,
+        solver: Literal["direct", "iterative", "auto"] = "auto",
     ) -> None:
         """SIMP-style Darcy-flow channel oracle, 2D (Q4) or 3D (Hex8).
 
@@ -87,6 +88,11 @@ class DarcyFlowOracle(PhysicsOracle):
         k_min_fraction:
             Closed-wall permeability floor as a fraction of ``K0``, avoiding
             a singular global matrix when a cell's density is zero.
+        solver:
+            ``"direct"``, ``"iterative"`` (AMG-preconditioned CG; ``Kff`` is
+            symmetric positive-definite), or ``"auto"`` (threshold-based;
+            see :mod:`morphos.physics._linsolve`). The AMG hierarchy is
+            cached and reused while the free-dof sparsity pattern is stable.
         """
         if len(shape) not in (2, 3):
             raise ValueError("DarcyFlowOracle needs a 2D (ny, nx) or 3D (nz, ny, nx) grid")
@@ -99,6 +105,8 @@ class DarcyFlowOracle(PhysicsOracle):
         self.permeability0 = float(permeability0)
         self.penalty = float(penalty)
         self.k_min = float(k_min_fraction) * self.permeability0
+        self.solver = solver
+        self._amg_cache: list = []
 
         self._nn = tuple(s + 1 for s in self.shape)
         self._n_dof = int(np.prod(self._nn))
@@ -193,7 +201,10 @@ class DarcyFlowOracle(PhysicsOracle):
         Kff = K[np.ix_(free, free)]
         Sf = self._S[free]
 
-        pf = spsolve(Kff.tocsc(), Sf)
+        pf, residual_norm, iterations = solve_linear(
+            Kff, Sf, solver=self.solver, dof_count=free.size,
+            symmetric=True, cache_holder=self._amg_cache,
+        )
         p = np.zeros(self._n_dof)
         p[free] = pf
 
@@ -212,4 +223,6 @@ class DarcyFlowOracle(PhysicsOracle):
             value=value,
             gradient=gradient,
             aux={"dissipation": dissipation, "pressure": pressure},
+            residual_norm=residual_norm,
+            solver_iterations=iterations,
         )

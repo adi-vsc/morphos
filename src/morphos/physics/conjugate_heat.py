@@ -36,13 +36,13 @@ Design choices that keep the adjoint exact and cheap (and are physically honest)
 
 from __future__ import annotations
 
-from typing import Iterable, Optional, Tuple
+from typing import Iterable, Literal, Optional, Tuple
 
 import numpy as np
 from scipy import sparse
-from scipy.sparse.linalg import spsolve
 
 from morphos.field import Field
+from morphos.physics._linsolve import solve_linear
 from morphos.physics.operators import q4_diffusion_stiffness
 from morphos.physics.oracle import PhysicsOracle, PhysicsResult
 
@@ -86,6 +86,7 @@ class ConjugateHeatOracle(PhysicsOracle):
         rho_cp: float = 1.0,
         p_simp: float = 3.0,
         objective_nodes: Optional[Iterable[int]] = None,
+        solver: Literal["direct", "iterative", "auto"] = "auto",
     ) -> None:
         """Conjugate-heat oracle on a ``(nely, nelx)`` element grid.
 
@@ -111,6 +112,15 @@ class ConjugateHeatOracle(PhysicsOracle):
         objective_nodes:
             Node indices whose mean temperature is the figure of merit. Default
             is all nodes.
+        solver:
+            ``"direct"``, ``"iterative"`` (AMG-preconditioned GMRES; the
+            convection-diffusion operator is non-symmetric, so CG is not
+            valid here), or ``"auto"`` (threshold-based; see
+            :mod:`morphos.physics._linsolve`). The forward solve and its
+            transposed adjoint solve share the same sparsity pattern (one is
+            the transpose of the other) but get independent AMG caches,
+            since SA-AMG is built from the matrix as given and a transpose
+            is a different matrix to the solver.
         """
         if len(shape) != 2:
             raise ValueError("ConjugateHeatOracle is 2D: shape must be (nely, nelx)")
@@ -157,6 +167,9 @@ class ConjugateHeatOracle(PhysicsOracle):
 
         self._elem_nodes = self._element_node_table()
         self._cache_h = None
+        self.solver = solver
+        self._amg_cache_fwd: list = []
+        self._amg_cache_adj: list = []
 
     def _element_node_table(self) -> np.ndarray:
         """(nelem, 4) global node indices per element in reference node order."""
@@ -286,16 +299,29 @@ class ConjugateHeatOracle(PhysicsOracle):
         rhs = f[free]
         if fixed.size:
             rhs = rhs - K[np.ix_(free, fixed)] @ self.fixed_values
-        T[free] = spsolve(Kff, rhs)
+        # Non-symmetric (advection-coupled) operator: GMRES, not CG, on the
+        # iterative path.
+        Tf, res_fwd, it_fwd = solve_linear(
+            Kff, rhs, solver=self.solver, dof_count=free.size,
+            symmetric=False, cache_holder=self._amg_cache_fwd,
+        )
+        T[free] = Tf
 
         Jt = float(self._c @ T)  # mean temperature over objective nodes
         value = -Jt
 
         # Adjoint of the non-symmetric operator: K^T lambda = c on free dofs,
-        # lambda = 0 on Dirichlet dofs.
+        # lambda = 0 on Dirichlet dofs. K^T has a different sparsity pattern
+        # ordering than K (it is the transpose), so it gets its own AMG cache.
         lam = np.zeros(self.n_nodes)
         KffT = K[np.ix_(free, free)].T.tocsc()
-        lam[free] = spsolve(KffT, self._c[free])
+        lamf, res_adj, it_adj = solve_linear(
+            KffT, self._c[free], solver=self.solver, dof_count=free.size,
+            symmetric=False, cache_holder=self._amg_cache_adj,
+        )
+        lam[free] = lamf
+        residual_norm = max(res_fwd, res_adj)
+        iterations = max(it_fwd, it_adj)
 
         # Element-local SIMP sensitivity of J = c.T : dJ/drho_e =
         #   -lambda_e^T (dK_diff/drho_e) T_e = -SIMP'(rho_e) lambda_e^T Ke0 T_e.
@@ -314,4 +340,6 @@ class ConjugateHeatOracle(PhysicsOracle):
             value=value,
             gradient=gradient,
             aux={"temperature": T_grid, "mean_temperature": Jt},
+            residual_norm=residual_norm,
+            solver_iterations=iterations,
         )

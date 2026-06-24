@@ -43,13 +43,13 @@ full coupled gradient in 2D and 3D.
 
 from __future__ import annotations
 
-from typing import Dict, Iterable, Optional, Tuple
+from typing import Dict, Iterable, Literal, Optional, Tuple
 
 import numpy as np
 from scipy import sparse
-from scipy.sparse.linalg import spsolve
 
 from morphos.field import Field
+from morphos.physics._linsolve import solve_linear
 from morphos.physics.operators import (
     hex8_diffusion_stiffness,
     hex8_stiffness,
@@ -90,6 +90,7 @@ class ThermoElasticOracle(PhysicsOracle):
         penalty: float = 3.0,
         e_min_fraction: float = 1e-9,
         k_min_fraction: float = 1e-6,
+        solver: Literal["direct", "iterative", "auto"] = "auto",
     ) -> None:
         """Coupled thermo-elastic SIMP oracle, 2D (Q4) or 3D (Hex8).
 
@@ -123,6 +124,13 @@ class ThermoElasticOracle(PhysicsOracle):
         e_min_fraction, k_min_fraction:
             Void floors for stiffness and conductivity, keeping both global
             matrices nonsingular.
+        solver:
+            ``"direct"``, ``"iterative"`` (AMG-preconditioned CG for both the
+            symmetric mechanical and thermal reduced systems), or ``"auto"``
+            (threshold-based; see :mod:`morphos.physics._linsolve`). The
+            mechanical and thermal operators each get their own cached AMG
+            hierarchy (sparsity patterns differ), reused while their
+            respective free-dof sets are stable.
         """
         if len(shape) not in (2, 3):
             raise ValueError("ThermoElasticOracle needs a 2D (ny, nx) or 3D (nz, ny, nx) grid")
@@ -140,6 +148,11 @@ class ThermoElasticOracle(PhysicsOracle):
         self.penalty = float(penalty)
         self.e_min = float(e_min_fraction) * self.young_modulus
         self.k_min = float(k_min_fraction) * self.conductivity0
+        self.solver = solver
+        # Two operators (mechanical K, thermal A) with distinct sparsity
+        # patterns get independent AMG caches.
+        self._amg_cache_mech: list = []
+        self._amg_cache_therm: list = []
 
         self._nn = tuple(s + 1 for s in self.shape)
         self._n_node = int(np.prod(self._nn))
@@ -307,7 +320,10 @@ class ThermoElasticOracle(PhysicsOracle):
 
         # 1. thermal forward solve
         Aff = A[np.ix_(free_t, free_t)].tocsc()
-        Tf = spsolve(Aff, self._Q[free_t])
+        Tf, res_t1, it_t1 = solve_linear(
+            Aff, self._Q[free_t], solver=self.solver, dof_count=free_t.size,
+            symmetric=True, cache_holder=self._amg_cache_therm,
+        )
         T = np.zeros(self._n_therm)
         T[free_t] = Tf
         theta = T - self.t_ref
@@ -315,7 +331,10 @@ class ThermoElasticOracle(PhysicsOracle):
         # 2. mechanical forward solve (thermal pre-stress as a load)
         Kff = K[np.ix_(free_m, free_m)].tocsc()
         rhs = self._F + C @ theta
-        uf = spsolve(Kff, rhs[free_m])
+        uf, res_m1, it_m1 = solve_linear(
+            Kff, rhs[free_m], solver=self.solver, dof_count=free_m.size,
+            symmetric=True, cache_holder=self._amg_cache_mech,
+        )
         u = np.zeros(self._n_mech)
         u[free_m] = uf
 
@@ -323,15 +342,24 @@ class ThermoElasticOracle(PhysicsOracle):
         value = -J
 
         # 3. mechanical co-state  K mu = l
-        muf = spsolve(Kff, self._l[free_m])
+        muf, res_m2, it_m2 = solve_linear(
+            Kff, self._l[free_m], solver=self.solver, dof_count=free_m.size,
+            symmetric=True, cache_holder=self._amg_cache_mech,
+        )
         mu = np.zeros(self._n_mech)
         mu[free_m] = muf
 
         # 4. thermal co-state  A psi = C^T mu
         ctmu = C.T @ mu
-        psif = spsolve(Aff, ctmu[free_t])
+        psif, res_t2, it_t2 = solve_linear(
+            Aff, ctmu[free_t], solver=self.solver, dof_count=free_t.size,
+            symmetric=True, cache_holder=self._amg_cache_therm,
+        )
         psi = np.zeros(self._n_therm)
         psi[free_t] = psif
+
+        residual_norm = max(res_t1, res_m1, res_m2, res_t2)
+        iterations = max(it_t1, it_m1, it_m2, it_t2)
 
         # 5. element-local coupled sensitivity (value = -J)
         dscale = self.penalty * rho_flat ** (self.penalty - 1.0)
@@ -357,4 +385,6 @@ class ThermoElasticOracle(PhysicsOracle):
                 "displacement": displacement,
                 "temperature": temperature,
             },
+            residual_norm=residual_norm,
+            solver_iterations=iterations,
         )

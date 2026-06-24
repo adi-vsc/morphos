@@ -74,3 +74,19 @@ def test_field_shape_mismatch_raises():
     o = channel((6, 8))
     with pytest.raises(ValueError):
         o.solve(Field(np.ones((5, 8)), spacing=1.0))
+
+
+def test_iterative_solver_matches_direct_on_saddle_point_system():
+    # The mixed velocity-pressure system is an indefinite saddle point, so
+    # the iterative path here is ILU-preconditioned GMRES (not SA-AMG), see
+    # StokesFlowOracle.__init__. Pin it against the direct solve.
+    shape = (10, 10)
+    rng = np.random.default_rng(31)
+    rho = 0.3 + 0.6 * rng.uniform(size=shape)
+    direct = channel(shape, solver="direct").solve(Field(rho, spacing=1.0))
+    it = channel(shape, solver="iterative").solve(Field(rho, spacing=1.0))
+    assert direct.solver_iterations == 0
+    assert it.solver_iterations > 0
+    assert it.residual_norm < 1e-6
+    rel_err = abs(it.value - direct.value) / abs(direct.value)
+    assert rel_err < 1e-6

@@ -18,9 +18,15 @@ scale to many design variables.
 The discrete operator is the shared symmetric positive-definite interior
 Laplacian from :mod:`morphos.physics.operators`. Because it is SPD, the linear
 solve can run either by a direct sparse factorization (``solver="direct"``,
-exact, best for small/moderate grids) or by a Jacobi-preconditioned conjugate
-gradient (``solver="cg"``, matrix-friendly, scales to grids where direct LU
-fill-in is prohibitive). Both produce the same answer to tolerance.
+exact, best for small/moderate grids) or by a preconditioned conjugate
+gradient: ``solver="cg"`` with an explicit ``preconditioner`` choice
+(``"jacobi"`` or ``"amg"``, legacy, hand-rolled), or the newer shared
+``solver="iterative"``/``"auto"`` path (:mod:`morphos.physics._linsolve`),
+which always uses SA-AMG-preconditioned CG and caches the AMG hierarchy across
+solves on this oracle as long as the grid (hence the matrix sparsity pattern)
+does not change. ``"auto"`` resolves to direct below
+:data:`morphos.physics._linsolve.AUTO_ITERATIVE_THRESHOLD` interior DOFs and to
+iterative at or above it. All paths produce the same answer to tolerance.
 """
 
 from __future__ import annotations
@@ -30,10 +36,11 @@ from scipy import sparse
 from scipy.sparse.linalg import cg, spsolve
 
 from morphos.field import Field
+from morphos.physics._linsolve import solve_linear
 from morphos.physics.operators import interior_laplacian
 from morphos.physics.oracle import PhysicsOracle, PhysicsResult
 
-_SOLVERS = ("direct", "cg")
+_SOLVERS = ("direct", "cg", "iterative", "auto")
 _PRECONDITIONERS = ("jacobi", "amg")
 
 
@@ -69,6 +76,10 @@ class HeatConductionOracle(PhysicsOracle):
         self._A = None
         self._A_spacing = None
         self._precond = None
+        # Cache holder for the shared solve_linear() AMG hierarchy (used by
+        # the "iterative"/"auto" modes only); a one-element list so
+        # _linsolve._AMGCache can be mutated in place across calls.
+        self._amg_cache: list = []
 
     @staticmethod
     def _boundary_mask(shape) -> np.ndarray:
@@ -104,14 +115,32 @@ class HeatConductionOracle(PhysicsOracle):
 
         return pyamg.smoothed_aggregation_solver(A.tocsr()).aspreconditioner()
 
-    def _solve_linear(self, A: sparse.csr_matrix, b: np.ndarray) -> np.ndarray:
+    def _solve_linear(self, A: sparse.csr_matrix, b: np.ndarray):
+        """Return ``(x, residual_norm, iterations)`` for the configured solver.
+
+        ``"direct"``/``"cg"`` are the original two paths (the latter with an
+        explicit jacobi/amg preconditioner choice); ``"iterative"``/``"auto"``
+        delegate to the shared, AMG-cached :func:`solve_linear` helper used by
+        every oracle.
+        """
+        if self.solver in ("iterative", "auto"):
+            return solve_linear(
+                A,
+                b,
+                solver=self.solver,
+                dof_count=b.size,
+                symmetric=True,
+                cache_holder=self._amg_cache,
+                rtol=self.cg_rtol,
+                maxiter=self.cg_maxiter,
+            )
         if self.solver == "direct":
-            return spsolve(A, b)
-        # A is symmetric positive-definite, so CG is valid and self-adjoint.
+            return spsolve(A, b), 0.0, 0
+        # "cg": A is symmetric positive-definite, so CG is valid and self-adjoint.
         x, info = cg(A, b, rtol=self.cg_rtol, atol=0.0, maxiter=self.cg_maxiter, M=self._precond)
         if info != 0:
             raise RuntimeError(f"CG failed to converge (info={info})")
-        return x
+        return x, float(np.linalg.norm(A @ x - b)), 0
 
     def solve(self, field: Field) -> PhysicsResult:
         if field.values.shape != self.shape:
@@ -125,7 +154,7 @@ class HeatConductionOracle(PhysicsOracle):
         # Source on the interior unknowns; the boundary is Dirichlet zero.
         s_int = field.values.ravel()[interior]
 
-        T_int = self._solve_linear(A, s_int)
+        T_int, res_fwd, iters_fwd = self._solve_linear(A, s_int)
         T_flat = np.zeros(field.values.size)
         T_flat[interior] = T_int
         T = T_flat.reshape(self.shape)
@@ -137,12 +166,18 @@ class HeatConductionOracle(PhysicsOracle):
         # Boundary temperature is fixed, so its objective terms stay out of the
         # gradient (they live only on boundary DOFs, which we never solve for).
         dJdT_int = (-2.0 * self.weight * diff).ravel()[interior]
-        lam_int = self._solve_linear(A, dJdT_int)
+        lam_int, res_adj, iters_adj = self._solve_linear(A, dJdT_int)
         grad_flat = np.zeros(field.values.size)
         grad_flat[interior] = lam_int
         gradient = grad_flat.reshape(self.shape)
 
-        return PhysicsResult(value=value, gradient=gradient, aux={"temperature": T})
+        return PhysicsResult(
+            value=value,
+            gradient=gradient,
+            aux={"temperature": T},
+            residual_norm=max(res_fwd, res_adj),
+            solver_iterations=max(iters_fwd, iters_adj),
+        )
 
     def residual(self, source: np.ndarray, temperature: np.ndarray) -> np.ndarray:
         """Return the residual of the linear system, near zero for a valid solve.
