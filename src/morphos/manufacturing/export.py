@@ -13,6 +13,10 @@ a slicer or AM/SLM build prep can consume:
    A true OpenVDB write requires the PicoGK/OpenVDB native runtime; when that is
    present ``vdb_path`` is populated, otherwise it stays ``None`` and the portable
    voxel sidecar carries the volume (kept explicit rather than writing a fake VDB).
+4. Score the field against the 26 standard build-plate orientations and attach
+   the lowest-scoring one as ``recommended_orientation``, so the operator gets
+   an orientation suggestion (support volume, overhang area, build height)
+   alongside the geometry rather than having to guess.
 
 The result is a :class:`ManufacturingBundle` and, when ``export_bundle`` is given
 the ``DesignResult``, the bundle and its STL/voxel paths are written back onto it.
@@ -28,6 +32,7 @@ from typing import Optional
 import numpy as np
 
 from morphos.field import Field
+from morphos.manufacturing.orientation import BuildOrientationScorer, OrientationScore
 from morphos.spec import DesignResult
 
 
@@ -53,6 +58,7 @@ class ManufacturingBundle:
     field: Field
     report: Optional[object] = None
     vdb_path: Optional[Path] = None
+    recommended_orientation: Optional[OrientationScore] = None
 
 
 def _write_binary_stl(path: Path, vertices: np.ndarray, faces: np.ndarray) -> None:
@@ -140,6 +146,8 @@ def export_bundle(
         spacing=np.asarray(field.spacing, dtype=float), iso_value=iso_value,
     )
 
+    recommended_orientation = BuildOrientationScorer().best_orientation(field)
+
     bundle = ManufacturingBundle(
         stl_path=stl_path,
         voxel_path=voxel_path,
@@ -147,6 +155,7 @@ def export_bundle(
         field=field,
         report=report,
         vdb_path=None,  # populated only when an OpenVDB/PicoGK writer is available
+        recommended_orientation=recommended_orientation,
     )
 
     if result is not None:
