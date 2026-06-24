@@ -8,7 +8,8 @@ optimized geometry and, crucially, the margin to the physical limit.
 from __future__ import annotations
 
 from dataclasses import dataclass, field as _dc_field
-from typing import Callable, List, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -44,6 +45,31 @@ class ParametricSpec:
 
 
 @dataclass
+class CoupledSpec:
+    """Specification for a sequentially (staggered) coupled multi-oracle run.
+
+    Each stage is an ``(oracle, objective, constraint)`` tuple optimised in order
+    on a single shared design ``Field``. ``passthrough`` maps a stage index to the
+    list of ``PhysicsResult.aux`` attributes that stage forwards into the *next*
+    stage's oracle (set as attributes on it), e.g. ``{0: ["velocity"]}`` passes the
+    velocity field solved in stage 0 into stage 1's oracle. The whole sequence is
+    repeated ``n_outer`` times (the outer staggered loop). This is the
+    operator-split approach; monolithic (simultaneous) coupling is deferred.
+
+    A single ``optimizer`` is shared across stages (every stage optimises the same
+    density Field, so one topology optimiser suffices); per-stage objectives and
+    constraints differ.
+    """
+
+    stages: List[Tuple[PhysicsOracle, Objective, object]]
+    optimizer: Optimizer
+    initial_field: Field
+    passthrough: Dict[int, List[str]] = _dc_field(default_factory=dict)
+    n_outer: int = 1
+    name: str = ""
+
+
+@dataclass
 class DesignResult:
     field: Field
     figure_of_merit: float
@@ -55,3 +81,12 @@ class DesignResult:
     converged: bool = False
     used_finite_differences: bool = False
     manufacturability: dict = _dc_field(default_factory=dict)
+    # Geometry-export state, populated by morphos.manufacturing.export.export_bundle
+    # (or by Engine.run(..., export=True)). Latent until the design is materialised.
+    mesh_path: Optional[Path] = None
+    vdb_path: Optional[Path] = None
+    manufacturing_bundle: Optional[Any] = None
+
+    @property
+    def is_exported(self) -> bool:
+        return self.mesh_path is not None

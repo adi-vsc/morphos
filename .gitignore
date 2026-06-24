@@ -24,6 +24,12 @@ runs/
 *.npz
 *.vtk
 
+# AI-tooling artifacts (never ship on the public engine surface)
+.claude/
+.claude-flow/
+.swarm/
+graphify-out/
+
 # OS
 .DS_Store
 Thumbs.db

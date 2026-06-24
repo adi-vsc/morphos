@@ -176,3 +176,107 @@ def test_overhang_report_zero_for_baseplate_only():
     f = Field(vals, spacing=1.0)
     rep = Overhang(angle_deg=45.0, build_axis=0).report(f)
     assert rep["unsupported_volume_fraction"] == pytest.approx(0.0, abs=1e-6)
+
+
+# --- Overhang 3D (build cone = (2w+1)^2 in-plane footprint) ----------------
+
+def test_overhang_3d_floating_island_is_unsupported():
+    # a solid voxel high up the build axis with only void beneath it must be
+    # suppressed (nothing in the support cone of the layers below).
+    vals = np.zeros((5, 5, 5))
+    vals[3, 2, 2] = 1.0  # floating island at z=3, layers 0..2 all void
+    f = Field(vals, spacing=1.0)
+    out = Overhang(angle_deg=45.0, build_axis=0).project(f)
+    assert out.values[3, 2, 2] < 0.1
+
+
+def test_overhang_3d_column_passes_through():
+    # a column along the build axis resting on the baseplate is self-supporting
+    # at every layer, so projection reproduces it (up to soft-max smoothing).
+    vals = np.zeros((5, 5, 5))
+    vals[:, 2, 2] = 1.0
+    f = Field(vals, spacing=1.0)
+    out = Overhang(angle_deg=45.0, build_axis=0).project(f)
+    assert np.allclose(out.values[:, 2, 2], 1.0, atol=1e-2)
+
+
+def test_overhang_3d_vjp_passes_directional_fd_gate():
+    rng = np.random.default_rng(11)
+    vals = rng.uniform(size=(4, 4, 4))
+    c = Overhang(angle_deg=45.0, build_axis=0)
+    f = Field(vals, spacing=1.0)
+    w = np.random.default_rng(12).normal(size=(4, 4, 4))
+
+    def scalar_objective(x):
+        return float(np.sum(c.project(Field(x, spacing=1.0)).values * w))
+
+    grad = c.vjp(f, w)
+    fd_gate(scalar_objective, grad, vals, rel=1e-3, h=1e-5)
+
+
+# --- MinWallThickness (differentiable morphological opening) ----------------
+
+def test_min_wall_is_a_constraint():
+    from morphos.manufacturing.constraints import MinWallThickness
+    assert isinstance(MinWallThickness(min_thickness_voxels=1), ManufacturabilityConstraint)
+
+
+def test_min_wall_eliminates_thin_features():
+    from morphos.manufacturing.constraints import MinWallThickness
+    # a one-voxel-wide solid wall is thinner than the structuring element and
+    # must be opened away; a thick solid block is preserved.
+    thin = np.zeros((9, 9)); thin[:, 4] = 1.0
+    block = np.zeros((9, 9)); block[2:7, 2:7] = 1.0
+    c = MinWallThickness(min_thickness_voxels=1, p_norm=20.0)
+    opened_thin = c.project(Field(thin, spacing=1.0)).values
+    opened_block = c.project(Field(block, spacing=1.0)).values
+    assert opened_thin.max() < 0.5                       # thin wall removed
+    assert opened_block[4, 4] > 0.9                      # thick core preserved
+
+
+def test_min_wall_vjp_passes_fd_gate():
+    from morphos.manufacturing.constraints import MinWallThickness
+    rng = np.random.default_rng(21)
+    vals = rng.uniform(size=(6, 6))
+    c = MinWallThickness(min_thickness_voxels=1, p_norm=12.0)
+    w = np.random.default_rng(22).normal(size=(6, 6))
+
+    def scalar(x):
+        return float(np.sum(c.project(Field(x, spacing=1.0)).values * w))
+
+    grad = c.vjp(Field(vals, spacing=1.0), w)
+    fd_gate(scalar, grad, vals, rel=1e-3, h=1e-5)
+
+
+# --- PowderRemoval (diffusion-proxy enclosed-void penalty) ------------------
+
+def test_powder_removal_flags_enclosed_void():
+    from morphos.manufacturing.constraints import PowderRemoval
+    # a solid shell enclosing a void pocket, drained from the bottom edge.
+    rho = np.ones((9, 9))
+    rho[3:6, 3:6] = 0.0  # sealed interior void
+    c = PowderRemoval(drain_edges=("bottom",), kappa=20.0)
+    enclosed = c.value(Field(rho, spacing=1.0))
+    assert enclosed > 0.0
+
+
+def test_powder_removal_passes_open_void():
+    from morphos.manufacturing.constraints import PowderRemoval
+    # a void channel open to the bottom drain edge should be barely penalised
+    # relative to the same-size enclosed pocket.
+    # drain edge "bottom" is the last row (index -1); equal void size isolates
+    # the connectivity effect.
+    open_v = np.ones((9, 9)); open_v[3:9, 4] = 0.0  # void column reaching row 8 (drain)
+    sealed = np.ones((9, 9)); sealed[1:7, 4] = 0.0  # same size, floating, no drain path
+    c = PowderRemoval(drain_edges=("bottom",), kappa=20.0)
+    assert c.value(Field(open_v, spacing=1.0)) < c.value(Field(sealed, spacing=1.0))
+
+
+def test_powder_removal_gradient_passes_fd_gate():
+    from morphos.manufacturing.constraints import PowderRemoval
+    rng = np.random.default_rng(31)
+    vals = 0.2 + 0.6 * rng.uniform(size=(6, 6))
+    c = PowderRemoval(drain_edges=("bottom",), kappa=5.0)
+    grad = c.vjp(Field(vals, spacing=1.0))
+    f = lambda x: c.value(Field(x, spacing=1.0))
+    fd_gate(f, grad, vals, rel=1e-4)

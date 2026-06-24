@@ -204,3 +204,73 @@ def test_elasticity_rejects_unsupported_dimension():
             fixed_dofs=[(0, 0, 0, 0, "x")],
             loads={(1, 1, 1, 1, "x"): 1.0},
         )
+
+
+# --- Stokes flow (Hex Taylor-Hood) ----------------------------------------
+
+def _stokes_parabola_3d(x):
+    """Unit-peak parabolic inflow in +x across a left (x=0) face spanning the
+    y-z cross-section. Zero in y and z."""
+    y, z = x[1], x[2]
+    Ly, Lz = y.max(), z.max()
+    ux = 16.0 * y * (Ly - y) * z * (Lz - z) / (Ly**2 * Lz**2)
+    zeros = np.zeros_like(ux)
+    return np.stack([ux, zeros, zeros])
+
+
+def _stokes_channel_3d(shape, **kw):
+    pytest.importorskip("skfem")
+    from morphos.physics.stokes import StokesFlowOracle
+
+    return StokesFlowOracle(
+        shape=shape,
+        inlet=("left", _stokes_parabola_3d),
+        noslip_edges=("top", "bottom", "front", "back"),
+        **kw,
+    )
+
+
+def test_stokes_3d_is_a_physics_oracle():
+    from morphos.physics.oracle import PhysicsOracle
+
+    o = _stokes_channel_3d((4, 4, 4))
+    assert isinstance(o, PhysicsOracle)
+    assert o.provides_gradient is True
+
+
+def test_stokes_3d_channel_flow_is_physical():
+    o = _stokes_channel_3d((4, 4, 5))
+    r = o.solve(Field(np.ones((4, 4, 5)), spacing=1.0))
+    assert r.aux["dissipation"] > 0.0
+    assert r.value == pytest.approx(-r.aux["dissipation"])
+    v = r.aux["velocity"]  # (nvz, nvy, nvx, 3)
+    assert v.shape == (5, 5, 6, 3)
+    assert 0.3 < np.abs(v).max() < 1.5
+
+
+def test_stokes_3d_no_slip_walls_are_zero():
+    o = _stokes_channel_3d((4, 4, 4))
+    r = o.solve(Field(np.ones((4, 4, 4)), spacing=1.0))
+    v = r.aux["velocity"]  # (nvz, nvy, nvx, 3)
+    assert np.allclose(v[:, 0, :, :], 0.0, atol=1e-9)   # bottom (y=0)
+    assert np.allclose(v[:, -1, :, :], 0.0, atol=1e-9)  # top (y=Ly)
+    assert np.allclose(v[0, :, :, :], 0.0, atol=1e-9)   # back (z=0)
+    assert np.allclose(v[-1, :, :, :], 0.0, atol=1e-9)  # front (z=Lz)
+
+
+def test_stokes_3d_blocking_costs_more_power():
+    shape = (4, 4, 4)
+    o = _stokes_channel_3d(shape)
+    open_ = o.solve(Field(np.ones(shape), spacing=1.0)).aux["dissipation"]
+    blocked = o.solve(Field(np.full(shape, 0.4), spacing=1.0)).aux["dissipation"]
+    assert open_ < blocked
+
+
+def test_stokes_3d_dissipation_gradient_passes_directional_fd_gate():
+    shape = (3, 4, 4)
+    o = _stokes_channel_3d(shape)
+    rng = np.random.default_rng(23)
+    x0 = 0.3 + 0.6 * rng.uniform(size=shape)
+    grad = o.solve(Field(x0, spacing=1.0)).gradient
+    f = lambda x: o.solve(Field(x, spacing=1.0)).value
+    fd_gate(f, grad, x0, rel=1e-4)

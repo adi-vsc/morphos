@@ -14,7 +14,18 @@ from typing import Optional, Tuple
 import numpy as np
 
 from morphos.field import Field
+from morphos.objective.objective import ObjectiveValue
 from morphos.optimize.optimizer import Optimizer, OptimizeResult
+
+
+def _evaluate(design: Field, oracle, objective) -> ObjectiveValue:
+    """Score a design, transparently supporting either a single ``Objective``
+    (evaluated on ``oracle.solve``) or a ``MultiObjective`` (which runs its own
+    oracles and returns the scalarised value/gradient)."""
+    if hasattr(objective, "evaluate_design"):  # MultiObjective duck type
+        ov = objective.evaluate_design(design)
+        return ObjectiveValue(fom=ov.scalar_fom, gradient=ov.scalar_grad)
+    return objective.evaluate(oracle.solve(design))
 
 
 class TopologyOptimizer(Optimizer):
@@ -38,7 +49,7 @@ class TopologyOptimizer(Optimizer):
 
     def _fom(self, x: Field, oracle, objective, constraint) -> float:
         design = self._project(x, constraint)
-        return objective.evaluate(oracle.solve(design)).fom
+        return _evaluate(design, oracle, objective).fom
 
     def _fd_gradient(self, x: Field, oracle, objective, constraint) -> np.ndarray:
         base = self._fom(x, oracle, objective, constraint)
@@ -65,7 +76,7 @@ class TopologyOptimizer(Optimizer):
         for i in range(self.max_iter):
             iterations = i + 1
             design = self._project(x, constraint)
-            ov = objective.evaluate(oracle.solve(design))
+            ov = _evaluate(design, oracle, objective)
             history.append(ov.fom)
 
             # Track the best design seen. Fixed-step ascent can overshoot on a
@@ -92,7 +103,7 @@ class TopologyOptimizer(Optimizer):
                 np.clip(x.values, self.bounds[0], self.bounds[1], out=x.values)
 
         final_design = self._project(x, constraint)
-        final_fom = objective.evaluate(oracle.solve(final_design)).fom
+        final_fom = _evaluate(final_design, oracle, objective).fom
         if final_fom > best_fom:
             best_fom = final_fom
             best_field = final_design.copy()

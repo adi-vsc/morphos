@@ -11,7 +11,8 @@ from __future__ import annotations
 from abc import ABC
 
 import numpy as np
-from scipy import ndimage
+from scipy import ndimage, sparse
+from scipy.sparse.linalg import spsolve
 
 from morphos.field import Field
 
@@ -81,13 +82,13 @@ class Overhang(ManufacturabilityConstraint):
     recovers the hard max/min as ``p -> infinity`` while staying
     differentiable for gradient-based topology optimization.
 
-    ``project`` and ``vjp`` are implemented for 2D fields only: the recursive
-    layer-by-layer construction generalizes to 3D by replacing each 1D
-    "row of columns" with a 2D in-plane layer and the footprint with a disc
-    of radius ``w`` in that plane, but that needs a 2D smooth-max over a
-    disc-shaped neighbourhood (not just a small fixed-width strip) and a
-    matching reverse pass, which is more than a drop-in change. Deferred;
-    2D (build direction = one grid axis) is the scope of this class.
+    Both 2D and 3D fields are supported. The build direction is one grid axis
+    (``build_axis``); the remaining axes form the in-plane layer. In 2D a layer
+    is a 1D row of columns and the support footprint is a strip of half-width
+    ``w``; in 3D a layer is a 2D plane and the footprint is the
+    ``(2w+1) x (2w+1)`` square below each voxel (the discretised build cone).
+    The recursive smooth-max support / smooth-min printing construction and its
+    exact reverse pass are otherwise identical across dimensions.
     """
 
     def __init__(
@@ -210,16 +211,84 @@ class Overhang(ManufacturabilityConstraint):
         d_rho[0] += grad[0] + d_printed_prev
         return d_rho
 
+    def _footprint_stack_2d(self, prev_layer: np.ndarray) -> np.ndarray:
+        """Stack the ``(2w+1)^2`` in-plane-shifted copies of a 2D layer
+        ``(ny, nx)`` into shape ``((2w+1)^2, ny, nx)``, zero padded (void
+        outside the plate is never free support)."""
+        w = self.footprint
+        ny, nx = prev_layer.shape
+        padded = np.pad(prev_layer, ((w, w), (w, w)), mode="constant", constant_values=0.0)
+        copies = [
+            padded[a : a + ny, b : b + nx]
+            for a in range(2 * w + 1)
+            for b in range(2 * w + 1)
+        ]
+        return np.stack(copies, axis=0)
+
+    def _project_3d(self, rho: np.ndarray) -> np.ndarray:
+        """3D Langelaar filter: layer axis is axis 0, each layer a 2D plane."""
+        n_layers = rho.shape[0]
+        printed = np.empty_like(rho)
+        printed[0] = rho[0]
+        for i in range(1, n_layers):
+            stack = self._footprint_stack_2d(printed[i - 1])
+            support, _ = self._ks_max(stack, axis=0)
+            support = support[0]
+            pair = np.stack([-rho[i], -support], axis=0)
+            neg_min, _ = self._ks_max(pair, axis=0)
+            printed[i] = -neg_min[0]
+        return printed
+
+    def _vjp_3d(self, rho: np.ndarray, grad: np.ndarray) -> np.ndarray:
+        n_layers = rho.shape[0]
+        w = self.footprint
+        ny, nx = rho.shape[1], rho.shape[2]
+        p = self.p
+
+        printed = np.empty_like(rho)
+        printed[0] = rho[0]
+        min_jac_cache = [None] * n_layers
+        max_jac_cache = [None] * n_layers
+        for i in range(1, n_layers):
+            stack = self._footprint_stack_2d(printed[i - 1])
+            support, max_weights = self._ks_max(stack, axis=0)
+            max_jac_cache[i] = self._ks_max_jacobian(stack, support, max_weights, p)
+            support = support[0]
+            pair = np.stack([-rho[i], -support], axis=0)
+            neg_min, min_weights = self._ks_max(pair, axis=0)
+            min_jac_cache[i] = self._ks_max_jacobian(pair, neg_min, min_weights, p)
+            printed[i] = -neg_min[0]
+
+        d_rho = np.zeros_like(rho)
+        d_printed_prev = np.zeros((ny, nx))
+        for i in range(n_layers - 1, 0, -1):
+            g = grad[i] + d_printed_prev
+            min_jac = min_jac_cache[i]
+            d_rho[i] += g * min_jac[0]
+            d_support = g * min_jac[1]
+
+            max_jac = max_jac_cache[i]  # ((2w+1)^2, ny, nx)
+            d_prev = np.zeros((ny + 2 * w, nx + 2 * w))
+            c = 0
+            for a in range(2 * w + 1):
+                for b in range(2 * w + 1):
+                    d_prev[a : a + ny, b : b + nx] += d_support * max_jac[c]
+                    c += 1
+            d_printed_prev = d_prev[w : w + ny, w : w + nx]
+
+        d_rho[0] += grad[0] + d_printed_prev
+        return d_rho
+
     def project(self, field: Field) -> Field:
         rho = np.moveaxis(field.values, self.build_axis, 0)
-        printed = self._project_2d(rho)
+        printed = self._project_2d(rho) if rho.ndim == 2 else self._project_3d(rho)
         out = np.moveaxis(printed, 0, self.build_axis)
         return field.like(out)
 
     def vjp(self, field: Field, grad: np.ndarray) -> np.ndarray:
         rho = np.moveaxis(field.values, self.build_axis, 0)
         g = np.moveaxis(grad, self.build_axis, 0)
-        d_rho = self._vjp_2d(rho, g)
+        d_rho = self._vjp_2d(rho, g) if rho.ndim == 2 else self._vjp_3d(rho, g)
         return np.moveaxis(d_rho, 0, self.build_axis)
 
     def report(self, field: Field) -> dict:
@@ -234,6 +303,200 @@ class Overhang(ManufacturabilityConstraint):
             "unsupported_volume_fraction": unsupported_fraction,
             "max_density_deficit": float(deficit.max()) if deficit.size else 0.0,
         }
+
+
+class MinWallThickness(ManufacturabilityConstraint):
+    """Enforce a minimum solid wall thickness by a differentiable morphological
+    *opening* (erosion followed by dilation): solid features thinner than the
+    structuring element are removed, while thicker walls and the void phase are
+    left essentially unchanged.
+
+    Each morphological step is a smooth log-sum-exp pool over a box neighbourhood
+    of side ``2*min_thickness_voxels + 1``:
+
+        erode(rho)_i  = -1/p * log( mean_{j in N(i)} exp(-p * rho_j) )   (soft-min)
+        open(rho)      =  1/p * log( mean_{j in N(i)} exp( p * erode_j) ) (soft-max)
+
+    As ``p -> infinity`` this recovers the exact min-pool / max-pool morphology;
+    finite ``p`` keeps it differentiable for gradient-based topology
+    optimization. The box average uses zero padding (``uniform_filter`` in
+    ``constant`` mode), which is a *self-adjoint* linear operator, so the vector
+    Jacobian product is the exact reverse chain through the two pools. FD-gated.
+
+    (The audit's single-pool ``(mean rho^p)^(1/p)`` with large positive ``p`` is a
+    soft-max / dilation, which would *grow* solid rather than open it; opening
+    needs the soft-min erosion first, as implemented here.)
+    """
+
+    def __init__(self, min_thickness_voxels: int = 1, p_norm: float = 20.0) -> None:
+        self.radius = int(min_thickness_voxels)
+        self.size = 2 * self.radius + 1
+        self.p = float(p_norm)
+
+    def _boxmean(self, x: np.ndarray) -> np.ndarray:
+        # Zero-padded box average: a self-adjoint linear operator (symmetric
+        # kernel, constant padding), so it serves as its own VJP.
+        return ndimage.uniform_filter(x, size=self.size, mode="constant", cval=0.0)
+
+    def _open(self, rho: np.ndarray):
+        p = self.p
+        A = np.exp(-p * rho)
+        B = self._boxmean(A)
+        e = -np.log(B) / p          # soft erosion
+        C = np.exp(p * e)
+        D = self._boxmean(C)
+        out = np.log(D) / p         # soft dilation of the erosion = opening
+        return out, (A, B, C, D)
+
+    def project(self, field: Field) -> Field:
+        out, _ = self._open(np.clip(field.values, 0.0, 1.0))
+        return field.like(out)
+
+    def vjp(self, field: Field, grad: np.ndarray) -> np.ndarray:
+        p = self.p
+        rho = np.clip(field.values, 0.0, 1.0)
+        _, (A, B, C, D) = self._open(rho)
+        # Reverse chain (every _boxmean is self-adjoint):
+        dD = grad / (p * D)
+        dC = self._boxmean(dD)
+        de = dC * p * C
+        dB = -de / (p * B)
+        dA = self._boxmean(dB)
+        d_rho = dA * (-p) * A
+        return d_rho
+
+    def report(self, field: Field) -> dict:
+        opened = self._open(np.clip(field.values, 0.0, 1.0))[0]
+        rho = np.clip(field.values, 0.0, 1.0)
+        removed = np.clip(rho - opened, 0.0, None)
+        total = float(rho.sum())
+        return {
+            "thin_wall_volume_fraction": float(removed.sum() / total) if total > 0 else 0.0,
+            "max_wall_removal": float(removed.max()) if removed.size else 0.0,
+        }
+
+
+class PowderRemoval(ManufacturabilityConstraint):
+    """Penalise enclosed voids that cannot drain loose powder after printing.
+
+    A connected-component test of the void phase is not differentiable, so this
+    uses a diffusion proxy. Solve, on the grid,
+
+        (-laplacian + kappa * rho) phi = 0,    phi = 1 on the drain boundary,
+
+    where the solid phase (high ``rho``) acts as a distributed absorber. Void
+    that is connected to a drain stays near ``phi = 1``; void sealed off by solid
+    decays to ``phi ~ 0``. The (differentiable, scalar) penalty is
+
+        P = sum_i (1 - rho_i) * (1 - phi_i),
+
+    large only for enclosed (un-drainable) void. ``project`` is the identity (this
+    is a penalty/diagnostic, not a geometry filter); ``value`` and ``vjp`` give the
+    penalty and its exact adjoint sensitivity ``dP/drho``. FD-gated.
+    """
+
+    _EDGES = ("left", "right", "top", "bottom", "front", "back")
+
+    def __init__(self, drain_edges=("bottom",), penalty_weight: float = 1.0,
+                 kappa: float = 10.0) -> None:
+        self.drain_edges = tuple(drain_edges)
+        self.penalty_weight = float(penalty_weight)
+        self.kappa = float(kappa)
+
+    def _drain_mask(self, shape) -> np.ndarray:
+        m = np.zeros(shape, dtype=bool)
+        ndim = len(shape)
+        # axis, lo/hi -> edge name (2D: y axis is rows=top/bottom, x axis cols=left/right)
+        names = {
+            (0, 0): "top", (0, 1): "bottom",
+            (1, 0): "left", (1, 1): "right",
+            (2, 0): "front", (2, 1): "back",
+        }
+        for axis in range(ndim):
+            for side, hi in ((0, False), (1, True)):
+                if names.get((axis, side)) in self.drain_edges:
+                    sl = [slice(None)] * ndim
+                    sl[axis] = -1 if hi else 0
+                    m[tuple(sl)] = True
+        return m
+
+    def _solve_phi(self, rho: np.ndarray, h: float):
+        from morphos.physics.operators import interior_laplacian
+
+        shape = rho.shape
+        drain = self._drain_mask(shape)
+        # Negative Laplacian (SPD) on the full grid via the shared kron-sum
+        # assembly is interior-only; build a full-grid operator with Dirichlet
+        # rows on the drain nodes instead. Simple 5/7-point assembly here.
+        n = rho.size
+        L = _full_laplacian(shape, h)
+        A = (L + sparse.diags(self.kappa * rho.ravel())).tolil()
+        b = np.zeros(n)
+        drain_flat = np.where(drain.ravel())[0]
+        for idx in drain_flat:
+            A.rows[idx] = [idx]
+            A.data[idx] = [1.0]
+            b[idx] = 1.0
+        A = A.tocsr()
+        phi = spsolve(A, b)
+        return phi.reshape(shape), A, drain.ravel()
+
+    def value(self, field: Field) -> float:
+        rho = np.clip(field.values, 0.0, 1.0)
+        phi, _, _ = self._solve_phi(rho, field.spacing[0])
+        return self.penalty_weight * float(np.sum((1.0 - rho) * (1.0 - phi)))
+
+    def vjp(self, field: Field, grad: np.ndarray = None) -> np.ndarray:
+        # Adjoint of P(rho) = w * sum (1-rho)(1-phi(rho)), A(rho) phi = b.
+        rho = np.clip(field.values, 0.0, 1.0)
+        w = self.penalty_weight
+        phi, A, drain = self._solve_phi(rho, field.spacing[0])
+        phi_flat = phi.ravel()
+        rho_flat = rho.ravel()
+
+        # Explicit dP/drho: -w (1 - phi).
+        dP_drho = -w * (1.0 - phi_flat)
+        # dP/dphi: -w (1 - rho); zero on drain rows (phi fixed there).
+        dP_dphi = -w * (1.0 - rho_flat)
+        dP_dphi[drain] = 0.0
+        # Adjoint solve A^T lam = dP/dphi.
+        lam = spsolve(A.T.tocsc(), dP_dphi)
+        # dA/drho_e affects only the diagonal absorber: d(A phi)/drho_e = kappa*phi_e.
+        # Total: dP/drho_e -= lam_e * kappa * phi_e (drain rows excluded: their
+        # diagonal was overwritten to 1 and no longer depends on rho).
+        coupling = self.kappa * lam * phi_flat
+        coupling[drain] = 0.0
+        dP_drho = dP_drho - coupling
+        return dP_drho.reshape(rho.shape)
+
+    def report(self, field: Field) -> dict:
+        rho = np.clip(field.values, 0.0, 1.0)
+        phi, _, _ = self._solve_phi(rho, field.spacing[0])
+        enclosed = (1.0 - rho) * (1.0 - phi)
+        return {
+            "enclosed_void_penalty": self.penalty_weight * float(enclosed.sum()),
+            "max_enclosed_void": float(enclosed.max()) if enclosed.size else 0.0,
+        }
+
+
+def _full_laplacian(shape, h: float) -> "sparse.csr_matrix":
+    """Full-grid negative Laplacian (Neumann interior, 5/7-point) via a
+    Kronecker sum of 1D second-difference operators with reflective ends."""
+    mats = []
+    ndim = len(shape)
+    for axis, n in enumerate(shape):
+        main = 2.0 * np.ones(n)
+        main[0] = 1.0
+        main[-1] = 1.0  # Neumann ends so the operator stays well-defined
+        off = -1.0 * np.ones(n - 1)
+        L1 = sparse.diags([off, main, off], [-1, 0, 1]) / (h * h)
+        eyes = [sparse.identity(m) for m in shape]
+        eyes[axis] = L1
+        K = eyes[0]
+        for e in eyes[1:]:
+            K = sparse.kron(K, e)
+        mats.append(K)
+    return sum(mats).tocsr()
 
 
 class Connectivity(ManufacturabilityConstraint):

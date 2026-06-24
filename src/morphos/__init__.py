@@ -14,6 +14,7 @@ from morphos.objective.objective import (
     MaximizeValue,
     PhysicalBound,
 )
+from morphos.objective.multi_objective import MultiObjective, ObjectiveVector
 from morphos.optimize.optimizer import Optimizer, OptimizeResult
 from morphos.optimize.topopt import TopologyOptimizer
 from morphos.optimize.parametric import ParametricOptimizer
@@ -25,16 +26,33 @@ from morphos.physics.elasticity import ElasticityOracle
 from morphos.physics.darcy import DarcyFlowOracle
 from morphos.physics.thermoelastic import ThermoElasticOracle
 from morphos.physics.stokes import StokesFlowOracle
-from morphos.intent import DesignIntent, CantileverIntent, ChannelIntent
+from morphos.intent import (
+    DesignIntent,
+    CantileverIntent,
+    ChannelIntent,
+    ThermalSinkIntent,
+    StokesBrinkmanChannelIntent,
+    ThermoElasticIntent,
+    HeatExchangerIntent,
+)
 from morphos.report import PerformanceReport, build_report
 from morphos.geometry.kernel import GeometryKernel
 from morphos.geometry.numpy_voxel import VoxelKernel
 from morphos.manufacturing.constraints import (
     ManufacturabilityConstraint,
     MinFeatureSize,
+    MinWallThickness,
+    PowderRemoval,
     Connectivity,
     Overhang,
 )
+from morphos.manufacturing.export import (
+    ManufacturingBundle,
+    PrintParams,
+    export_bundle,
+)
+from morphos.feedback import FeedbackRecord, OracleCalibrator
+from morphos.library import ComponentLibrary, ComponentSpec, default_library
 
 __version__ = "0.0.1"
 
@@ -64,12 +82,28 @@ __all__ = [
     "DesignIntent",
     "CantileverIntent",
     "ChannelIntent",
+    "ThermalSinkIntent",
+    "StokesBrinkmanChannelIntent",
+    "ThermoElasticIntent",
+    "HeatExchangerIntent",
     "PerformanceReport",
     "build_report",
     "GeometryKernel",
     "VoxelKernel",
+    "MultiObjective",
+    "ObjectiveVector",
     "ManufacturabilityConstraint",
     "MinFeatureSize",
+    "MinWallThickness",
+    "PowderRemoval",
     "Connectivity",
     "Overhang",
+    "ManufacturingBundle",
+    "PrintParams",
+    "export_bundle",
+    "FeedbackRecord",
+    "OracleCalibrator",
+    "ComponentLibrary",
+    "ComponentSpec",
+    "default_library",
 ]

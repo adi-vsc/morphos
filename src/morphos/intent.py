@@ -23,7 +23,21 @@ from morphos.objective.objective import MaximizeValue, PhysicalBound
 from morphos.optimize.topopt import TopologyOptimizer
 from morphos.physics.darcy import DarcyFlowOracle
 from morphos.physics.elasticity import ElasticityOracle
-from morphos.spec import DesignSpec
+from morphos.spec import CoupledSpec, DesignSpec
+
+_EDGE_NODES = {
+    # (edge -> predicate building flat node indices on an (nny, nnx) node grid)
+    "left": lambda nny, nnx: [j * nnx for j in range(nny)],
+    "right": lambda nny, nnx: [j * nnx + (nnx - 1) for j in range(nny)],
+    "bottom": lambda nny, nnx: list(range(nnx)),
+    "top": lambda nny, nnx: [(nny - 1) * nnx + i for i in range(nnx)],
+}
+
+
+def _edge_node_indices(edge: str, nny: int, nnx: int):
+    if edge not in _EDGE_NODES:
+        raise ValueError(f"edge must be one of {tuple(_EDGE_NODES)}, got {edge!r}")
+    return _EDGE_NODES[edge](nny, nnx)
 
 
 def _check_volume_fraction(volume_fraction: float) -> float:
@@ -137,4 +151,263 @@ class ChannelIntent(DesignIntent):
                 step_size=self.step_size, max_iter=self.max_iter, tol=-1.0, bounds=self.bounds
             ),
             name="channel",
+        )
+
+
+def _parabolic_inflow(u_max: float, axis: int):
+    """Parabolic velocity profile peaking at ``u_max``, flowing along ``axis``
+    (0 = +x, 1 = +y), zero across the span. Suitable as a Stokes inlet."""
+    def profile(x):
+        span = x[1 - axis]
+        lo, hi = span.min(), span.max()
+        length = max(hi - lo, 1e-30)
+        s = (span - lo) / length
+        mag = u_max * 4.0 * s * (1.0 - s)
+        comps = [np.zeros_like(mag), np.zeros_like(mag)]
+        comps[axis] = mag
+        return np.stack(comps)
+    return profile
+
+
+class ThermalSinkIntent(DesignIntent):
+    """Distribute conductive material in a domain with a uniform volumetric heat
+    source and one fixed-temperature sink edge, to minimise mean temperature.
+
+    Built on :class:`ConjugateHeatOracle` at zero velocity, so the conductivity
+    field ``k(rho) = k_fluid + rho^p (k_solid - k_fluid)`` is the design variable
+    (pure SIMP conduction). Objective: maximise ``-mean_temperature``.
+    """
+
+    def __init__(
+        self,
+        nx: int,
+        ny: int,
+        heat_source_W_m3: float,
+        k_solid: float,
+        sink_edge: str = "left",
+        volume_fraction: float = 0.5,
+        k_fluid: float = 1e-3,
+        p_simp: float = 3.0,
+        step_size: float = 0.2,
+        max_iter: int = 60,
+        bounds=(1e-3, 1.0),
+    ) -> None:
+        self.nx, self.ny = int(nx), int(ny)
+        self.heat_source = float(heat_source_W_m3)
+        self.k_solid = float(k_solid)
+        self.k_fluid = float(k_fluid)
+        self.sink_edge = sink_edge
+        self.volume_fraction = _check_volume_fraction(volume_fraction)
+        self.p_simp = float(p_simp)
+        self.step_size = float(step_size)
+        self.max_iter = int(max_iter)
+        self.bounds = bounds
+
+    def build(self) -> DesignSpec:
+        from morphos.physics.conjugate_heat import ConjugateHeatOracle
+
+        shape = (self.ny, self.nx)
+        nny, nnx = self.ny + 1, self.nx + 1
+        sink = _edge_node_indices(self.sink_edge, nny, nnx)
+        oracle = ConjugateHeatOracle(
+            shape=shape,
+            velocity=np.zeros((nny, nnx, 2)),
+            source=np.full(shape, self.heat_source),
+            fixed_nodes=sink,
+            fixed_values=[0.0] * len(sink),
+            k_solid=self.k_solid,
+            k_fluid=self.k_fluid,
+            p_simp=self.p_simp,
+        )
+        initial = Field(np.full(shape, self.volume_fraction), spacing=1.0)
+        return DesignSpec(
+            initial=initial,
+            oracle=oracle,
+            objective=MaximizeValue(bound=PhysicalBound(value=0.0, name="isothermal-limit")),
+            optimizer=TopologyOptimizer(
+                step_size=self.step_size, max_iter=self.max_iter, tol=-1.0, bounds=self.bounds
+            ),
+            name="thermal-sink",
+        )
+
+
+class StokesBrinkmanChannelIntent(DesignIntent):
+    """Find the internal channel topology that minimises viscous dissipation for
+    a prescribed parabolic inflow, built on :class:`StokesFlowOracle`."""
+
+    def __init__(
+        self,
+        nx: int,
+        ny: int,
+        mu: float = 1.0,
+        u_max: float = 1.0,
+        inlet_edge: str = "left",
+        volume_fraction: float = 1.0,
+        step_size: float = 1.0,
+        max_iter: int = 8,
+        bounds=(0.0, 1.0),
+    ) -> None:
+        self.nx, self.ny = int(nx), int(ny)
+        self.mu = float(mu)
+        self.u_max = float(u_max)
+        self.inlet_edge = inlet_edge
+        self.volume_fraction = _check_volume_fraction(volume_fraction)
+        self.step_size = float(step_size)
+        self.max_iter = int(max_iter)
+        self.bounds = bounds
+
+    def build(self) -> DesignSpec:
+        from morphos.physics.stokes import StokesFlowOracle
+
+        shape = (self.ny, self.nx)
+        # Flow axis is +x for a left/right inlet, +y for a top/bottom inlet.
+        axis = 0 if self.inlet_edge in ("left", "right") else 1
+        walls = ("top", "bottom") if axis == 0 else ("left", "right")
+        oracle = StokesFlowOracle(
+            shape=shape,
+            inlet=(self.inlet_edge, _parabolic_inflow(self.u_max, axis)),
+            noslip_edges=walls,
+            viscosity=self.mu,
+        )
+        initial = Field(np.full(shape, self.volume_fraction), spacing=1.0)
+        return DesignSpec(
+            initial=initial,
+            oracle=oracle,
+            objective=MaximizeValue(bound=PhysicalBound(value=0.0, name="zero-dissipation-limit")),
+            optimizer=TopologyOptimizer(
+                step_size=self.step_size, max_iter=self.max_iter, tol=-1.0, bounds=self.bounds
+            ),
+            name="stokes-channel",
+        )
+
+
+class ThermoElasticIntent(DesignIntent):
+    """A structure under a mechanical load and a steady thermal gradient,
+    minimising the coupled thermo-elastic objective. Built on
+    :class:`ThermoElasticOracle` (left edge clamped and held at the sink
+    temperature; a point load and a corner heat source)."""
+
+    def __init__(
+        self,
+        nx: int,
+        ny: int,
+        load: float = -1.0,
+        alpha_cte: float = 1.0,
+        volume_fraction: float = 0.5,
+        young_modulus: float = 1.0,
+        poisson_ratio: float = 0.3,
+        step_size: float = 2e-3,
+        max_iter: int = 60,
+        bounds=(1e-3, 1.0),
+    ) -> None:
+        self.nx, self.ny = int(nx), int(ny)
+        self.load = float(load)
+        self.alpha_cte = float(alpha_cte)
+        self.volume_fraction = _check_volume_fraction(volume_fraction)
+        self.young_modulus = float(young_modulus)
+        self.poisson_ratio = float(poisson_ratio)
+        self.step_size = float(step_size)
+        self.max_iter = int(max_iter)
+        self.bounds = bounds
+
+    def build(self) -> DesignSpec:
+        from morphos.physics.thermoelastic import ThermoElasticOracle
+
+        shape = (self.ny, self.nx)
+        nny, nnx = self.ny + 1, self.nx + 1
+        fixed_dofs = [(0, j, ax) for j in range(nny) for ax in ("x", "y")]
+        loads = {(nnx - 1, nny // 2, "y"): self.load}
+        fixed_temps = [(0, j) for j in range(nny)]
+        heat_sources = {(nnx - 1, nny - 1): 1.0}
+        oracle = ThermoElasticOracle(
+            shape=shape,
+            fixed_dofs=fixed_dofs,
+            loads=loads,
+            fixed_temps=fixed_temps,
+            heat_sources=heat_sources,
+            thermal_expansion=self.alpha_cte,
+            young_modulus=self.young_modulus,
+            poisson_ratio=self.poisson_ratio,
+        )
+        initial = Field(np.full(shape, self.volume_fraction), spacing=1.0)
+        return DesignSpec(
+            initial=initial,
+            oracle=oracle,
+            objective=MaximizeValue(bound=PhysicalBound(value=0.0, name="rigid-isothermal-limit")),
+            optimizer=TopologyOptimizer(
+                step_size=self.step_size, max_iter=self.max_iter, tol=-1.0, bounds=self.bounds
+            ),
+            name="thermoelastic",
+        )
+
+
+class HeatExchangerIntent(DesignIntent):
+    """Two-stage staggered intent: a Stokes channel optimisation followed by a
+    conjugate-heat optimisation that consumes the solved velocity field. Returns
+    a :class:`CoupledSpec` (see CoupledEngine)."""
+
+    def __init__(
+        self,
+        nx: int,
+        ny: int,
+        mu: float = 1.0,
+        u_max: float = 1.0,
+        heat_source_W_m3: float = 1.0,
+        k_solid: float = 1.0,
+        k_fluid: float = 1e-2,
+        rho_cp: float = 1.0,
+        volume_fraction: float = 1.0,
+        n_outer: int = 1,
+        step_size: float = 1e-3,
+        max_iter: int = 5,
+    ) -> None:
+        self.nx, self.ny = int(nx), int(ny)
+        self.mu = float(mu)
+        self.u_max = float(u_max)
+        self.heat_source = float(heat_source_W_m3)
+        self.k_solid = float(k_solid)
+        self.k_fluid = float(k_fluid)
+        self.rho_cp = float(rho_cp)
+        self.volume_fraction = _check_volume_fraction(volume_fraction)
+        self.n_outer = int(n_outer)
+        self.step_size = float(step_size)
+        self.max_iter = int(max_iter)
+
+    def build(self) -> CoupledSpec:
+        from morphos.physics.conjugate_heat import ConjugateHeatOracle
+        from morphos.physics.stokes import StokesFlowOracle
+
+        shape = (self.ny, self.nx)
+        nny, nnx = self.ny + 1, self.nx + 1
+        inlet = _edge_node_indices("left", nny, nnx)
+
+        stokes = StokesFlowOracle(
+            shape=shape,
+            inlet=("left", _parabolic_inflow(self.u_max, axis=0)),
+            noslip_edges=("top", "bottom"),
+            viscosity=self.mu,
+        )
+        cht = ConjugateHeatOracle(
+            shape=shape,
+            velocity=np.zeros((nny, nnx, 2)),  # filled by passthrough from stage 0
+            source=np.full(shape, self.heat_source),
+            fixed_nodes=inlet,
+            fixed_values=[0.0] * len(inlet),
+            k_solid=self.k_solid,
+            k_fluid=self.k_fluid,
+            rho_cp=self.rho_cp,
+        )
+        opt = TopologyOptimizer(
+            step_size=self.step_size, max_iter=self.max_iter, bounds=(0.0, 1.0)
+        )
+        return CoupledSpec(
+            stages=[
+                (stokes, MaximizeValue(), None),
+                (cht, MaximizeValue(), None),
+            ],
+            optimizer=opt,
+            initial_field=Field(np.full(shape, self.volume_fraction), spacing=1.0),
+            passthrough={0: ["velocity"]},
+            n_outer=self.n_outer,
+            name="heat-exchanger",
         )

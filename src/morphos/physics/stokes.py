@@ -39,8 +39,16 @@ term alone,
 
 no co-state solve required (exactly as compliance is self-adjoint for
 elasticity). Verified against a central-FD directional gate in
-``tests/test_stokes.py``. Scoped to 2D; the same construction extends to 3D
-Hex/Taylor-Hood and is left as a follow-up.
+``tests/test_stokes.py``.
+
+Both 2D (quad Taylor-Hood, ``ElementQuad2``/``ElementQuad1``) and 3D
+(hexahedral Taylor-Hood, ``ElementHex2``/``ElementHex1``) are supported on a
+structured grid. The element type is the only thing that changes with
+dimension: the Brinkman interpolation, the saddle-point assembly, the
+dissipation objective, and the self-adjoint sensitivity are all written
+dimension-generally. 3D follows the project rule (MEMORY.md) of vendoring the
+hard inf-sup-stable saddle-point element rather than hand-rolling an unstable
+equal-order Hex8 -- scikit-fem supplies the LBB-stable Hex Taylor-Hood pair.
 """
 
 from __future__ import annotations
@@ -52,7 +60,9 @@ import numpy as np
 from morphos.field import Field
 from morphos.physics.oracle import PhysicsOracle, PhysicsResult
 
+# 2D edges (x: left/right, y: bottom/top) plus the 3D z faces (back/front).
 _EDGES = ("left", "right", "top", "bottom")
+_FACES = ("left", "right", "top", "bottom", "back", "front")
 
 
 class StokesFlowOracle(PhysicsOracle):
@@ -60,7 +70,7 @@ class StokesFlowOracle(PhysicsOracle):
 
     def __init__(
         self,
-        shape: Tuple[int, int],
+        shape: Tuple[int, ...],
         inlet: Tuple[str, Callable[[np.ndarray], np.ndarray]],
         noslip_edges: Iterable[str] = (),
         viscosity: float = 1.0,
@@ -68,21 +78,24 @@ class StokesFlowOracle(PhysicsOracle):
         alpha_min: float = 0.0,
         brinkman_q: float = 0.1,
     ) -> None:
-        """Brinkman-Stokes fluid-TO oracle on a 2D structured quad grid.
+        """Brinkman-Stokes fluid-TO oracle on a structured 2D quad or 3D hex grid.
 
         Parameters
         ----------
         shape:
-            Number of *elements* per axis ``(ny, nx)`` (one design cell per
-            quad element).
+            Number of *elements* per axis: ``(ny, nx)`` in 2D or
+            ``(nz, ny, nx)`` in 3D (one design cell per element). The number of
+            axes selects the dimension.
         inlet:
-            ``(edge, profile)`` where ``edge`` is one of ``"left"``,
-            ``"right"``, ``"top"``, ``"bottom"`` and ``profile`` maps an array
-            of boundary coordinates ``x`` (shape ``(2, N)``) to a velocity field
-            (shape ``(2, N)``).
+            ``(edge, profile)``. In 2D ``edge`` is one of ``"left"``,
+            ``"right"``, ``"top"``, ``"bottom"`` and ``profile`` maps boundary
+            coordinates ``x`` (shape ``(2, N)``) to a velocity field
+            (shape ``(2, N)``). In 3D the two extra faces ``"back"`` (z=0) and
+            ``"front"`` (z=Lz) are also available and ``profile`` works on
+            ``(3, N)`` arrays.
         noslip_edges:
-            Edges held at zero velocity (walls). Edges that are neither the
-            inlet nor a wall are natural outflow boundaries.
+            Edges/faces held at zero velocity (walls). Boundaries that are
+            neither the inlet nor a wall are natural outflow boundaries.
         viscosity:
             Dynamic viscosity ``mu``.
         alpha_max, alpha_min:
@@ -99,19 +112,23 @@ class StokesFlowOracle(PhysicsOracle):
                 "(pip install morphos[cfd])"
             ) from exc
 
-        if len(shape) != 2:
-            raise ValueError("StokesFlowOracle is 2D: shape must be (ny, nx)")
+        if len(shape) not in (2, 3):
+            raise ValueError(
+                "StokesFlowOracle supports 2D (ny, nx) or 3D (nz, ny, nx) grids"
+            )
         if any(int(s) < 1 for s in shape):
             raise ValueError("grid must have at least one element per axis")
+        self.ndim = len(shape)
+        valid = _EDGES if self.ndim == 2 else _FACES
         inlet_edge, profile = inlet
-        if inlet_edge not in _EDGES:
-            raise ValueError(f"inlet edge must be one of {_EDGES}, got {inlet_edge!r}")
+        if inlet_edge not in valid:
+            raise ValueError(f"inlet edge must be one of {valid}, got {inlet_edge!r}")
         noslip = tuple(noslip_edges)
         for e in noslip:
-            if e not in _EDGES:
-                raise ValueError(f"noslip edge must be one of {_EDGES}, got {e!r}")
+            if e not in valid:
+                raise ValueError(f"noslip edge must be one of {valid}, got {e!r}")
 
-        self.shape = (int(shape[0]), int(shape[1]))
+        self.shape = tuple(int(s) for s in shape)
         self.inlet_edge = inlet_edge
         self.profile = profile
         self.noslip = noslip
@@ -131,22 +148,34 @@ class StokesFlowOracle(PhysicsOracle):
 
     def _build(self, h: float) -> None:
         """Build the mesh, bases, constant operators, and the design-cell ->
-        mesh-element permutation. Cached per spacing."""
+        mesh-element permutation. Cached per spacing. Element type is selected
+        by dimension (quad Taylor-Hood in 2D, hex Taylor-Hood in 3D); the forms
+        and assembly are identical."""
         if self._cache_h == h:
             return
-        import skfem
-        from skfem import (
-            Basis, BilinearForm, ElementQuad0, ElementQuad1, ElementQuad2,
-            ElementVector, MeshQuad, asm,
-        )
+        from skfem import Basis, BilinearForm, ElementVector, asm
         from skfem.helpers import ddot, div, dot, grad
 
-        ny, nx = self.shape
-        Lx, Ly = nx * h, ny * h
-        mesh = MeshQuad.init_tensor(np.linspace(0, Lx, nx + 1), np.linspace(0, Ly, ny + 1))
-        ub = Basis(mesh, ElementVector(ElementQuad2()))
-        pb = ub.with_element(ElementQuad1())
-        rb = ub.with_element(ElementQuad0())  # rho per element, ub's quadrature
+        # Axis lengths in physical units, ordered fastest-varying last to match
+        # the row-major design field. self.shape is (ny, nx) or (nz, ny, nx).
+        n_axes = self.shape[::-1]  # (nx, ny[, nz])
+        self._L = [n * h for n in n_axes]  # (Lx, Ly[, Lz])
+        coords = [np.linspace(0.0, L, n + 1) for L, n in zip(self._L, n_axes)]
+
+        if self.ndim == 2:
+            from skfem import ElementQuad0, ElementQuad1, ElementQuad2, MeshQuad
+
+            mesh = MeshQuad.init_tensor(*coords)
+            e_vel, e_pre, e_rho = ElementQuad2, ElementQuad1, ElementQuad0
+        else:
+            from skfem import ElementHex0, ElementHex1, ElementHex2, MeshHex
+
+            mesh = MeshHex.init_tensor(*coords)
+            e_vel, e_pre, e_rho = ElementHex2, ElementHex1, ElementHex0
+
+        ub = Basis(mesh, ElementVector(e_vel()))
+        pb = ub.with_element(e_pre())
+        rb = ub.with_element(e_rho())  # rho per element, ub's quadrature
 
         @BilinearForm
         def viscous(u, v, w):
@@ -165,40 +194,52 @@ class StokesFlowOracle(PhysicsOracle):
         self._asm = asm
         self._A_visc = asm(viscous, ub)
         self._B = asm(bdiv, ub, pb)
-        self._tol = 1e-9 * max(Lx, Ly)
+        self._tol = 1e-9 * max(self._L)
 
         # Dirichlet dofs and lifted inlet velocity values.
-        dir_dofs, ud = self._dirichlet(Lx, Ly)
+        dir_dofs, ud = self._dirichlet()
         self._dir_dofs, self._ud = dir_dofs, ud
 
-        # Design-cell (row-major (iy, ix)) -> mesh-element permutation, robust to
+        # Design-cell (row-major) -> mesh-element permutation, robust to
         # scikit-fem's internal element ordering.
-        cent = mesh.p[:, mesh.t].mean(axis=1)  # (2, nelem)
-        ix = np.clip((cent[0] / h).astype(int), 0, nx - 1)
-        iy = np.clip((cent[1] / h).astype(int), 0, ny - 1)
-        self._cell_of_elem = iy * nx + ix  # element e draws rho from this flat cell
+        cent = mesh.p[:, mesh.t].mean(axis=1)  # (ndim, nelem)
+        idx = [np.clip((cent[a] / h).astype(int), 0, n - 1) for a, n in enumerate(n_axes)]
+        # Flatten row-major: (nz, ny, nx) -> ((iz*ny)+iy)*nx + ix.
+        flat = idx[-1].copy()  # ix
+        stride = n_axes[0]  # nx
+        for a in range(1, self.ndim):
+            flat = flat + idx[a] * stride
+            stride *= n_axes[a]
+        self._cell_of_elem = flat  # element e draws rho from this flat cell
         self._cache_h = h
 
-    def _edge_facets(self, edge, Lx, Ly):
-        mesh, tol = self._mesh, self._tol
-        pred = {
+    def _face_predicates(self):
+        """Boundary predicates keyed by face name, valid for the current dim."""
+        L, tol = self._L, self._tol
+        preds = {
             "left": lambda x: x[0] < tol,
-            "right": lambda x: x[0] > Lx - tol,
+            "right": lambda x: x[0] > L[0] - tol,
             "bottom": lambda x: x[1] < tol,
-            "top": lambda x: x[1] > Ly - tol,
-        }[edge]
-        return mesh.facets_satisfying(pred)
+            "top": lambda x: x[1] > L[1] - tol,
+        }
+        if self.ndim == 3:
+            preds["back"] = lambda x: x[2] < tol
+            preds["front"] = lambda x: x[2] > L[2] - tol
+        return preds
 
-    def _dirichlet(self, Lx, Ly):
+    def _edge_facets(self, edge):
+        return self._mesh.facets_satisfying(self._face_predicates()[edge])
+
+    def _dirichlet(self):
         ub = self._ub
-        inlet_facets = self._edge_facets(self.inlet_edge, Lx, Ly)
+        inlet_facets = self._edge_facets(self.inlet_edge)
         inlet_dofs = ub.get_dofs(facets=inlet_facets).all()
         ud = ub.zeros()
         projected = ub.project(self.profile)
         ud[inlet_dofs] = projected[inlet_dofs]
         dir_dofs = [inlet_dofs]
         for edge in self.noslip:
-            wall = ub.get_dofs(facets=self._edge_facets(edge, Lx, Ly)).all()
+            wall = ub.get_dofs(facets=self._edge_facets(edge)).all()
             dir_dofs.append(wall)
             ud[wall] = 0.0  # no-slip wins at inlet/wall corner nodes
         return np.unique(np.concatenate(dir_dofs)), ud
@@ -245,8 +286,8 @@ class StokesFlowOracle(PhysicsOracle):
 
         # Self-adjoint sensitivity: per element, -alpha'(rho_e) * integral_e |u|^2.
         uq = ub.interpolate(u)  # components indexable; each (nelem, nqp)
-        u0, u1 = np.asarray(uq[0]), np.asarray(uq[1])
-        elem_energy = np.sum((u0 ** 2 + u1 ** 2) * ub.dx, axis=1)  # (nelem,)
+        usq = sum(np.asarray(uq[c]) ** 2 for c in range(self.ndim))
+        elem_energy = np.sum(usq * ub.dx, axis=1)  # (nelem,)
         grad_elem = -self._alpha_grad(rho_elem) * elem_energy
         grad_flat = np.zeros(rho_flat.size)
         np.add.at(grad_flat, self._cell_of_elem, grad_elem)
@@ -263,18 +304,20 @@ class StokesFlowOracle(PhysicsOracle):
         )
 
     def _velocity_grid(self, u: np.ndarray) -> np.ndarray:
-        """Velocity sampled on the regular (ny+1, nx+1) corner-node grid as
-        ``(nvy, nvx, 2)`` -- the corners are the Quad2 vertex dofs, convenient
-        for boundary checks and visualization."""
+        """Velocity sampled on the regular corner-node grid -- ``(nvy, nvx, 2)``
+        in 2D or ``(nvz, nvy, nvx, 3)`` in 3D. The corners are the Quad2/Hex2
+        vertex dofs (scikit-fem orders nodal/vertex dofs first), convenient for
+        boundary checks and visualization."""
         ub, mesh = self._ub, self._mesh
-        ny, nx = self.shape
         h = self._cache_h
-        out = np.zeros((ny + 1, nx + 1, 2))
-        # Vertex dofs: scikit-fem orders nodal (vertex) dofs first for Quad2.
-        nodal = ub.nodal_dofs  # (2, n_vertices)
-        pts = mesh.p  # (2, n_vertices)
-        ix = np.rint(pts[0] / h).astype(int)
-        iy = np.rint(pts[1] / h).astype(int)
-        out[iy, ix, 0] = u[nodal[0]]
-        out[iy, ix, 1] = u[nodal[1]]
+        nodal = ub.nodal_dofs  # (ndim, n_vertices)
+        pts = mesh.p  # (ndim, n_vertices)
+        # Integer grid indices per axis, ordered to match (nz, ny, nx) layout.
+        gidx = [np.rint(pts[a] / h).astype(int) for a in range(self.ndim)]
+        out_shape = tuple(n + 1 for n in self.shape) + (self.ndim,)
+        out = np.zeros(out_shape)
+        # pts rows are (x, y[, z]); design axes are (..., y, x) -> reverse for index.
+        index = tuple(gidx[self.ndim - 1 - a] for a in range(self.ndim))
+        for c in range(self.ndim):
+            out[index + (c,)] = u[nodal[c]]
         return out
