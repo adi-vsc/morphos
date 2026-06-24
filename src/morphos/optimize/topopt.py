@@ -26,6 +26,7 @@ is a transparent no-op for problems that have no SIMP exponent at all.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
@@ -33,6 +34,7 @@ from scipy import ndimage
 
 from morphos.field import Field
 from morphos.objective.objective import ObjectiveValue
+from morphos.optimize.checkpoint import checkpoint_path, load_checkpoint, save_checkpoint
 from morphos.optimize.optimizer import Optimizer, OptimizeResult
 
 
@@ -75,6 +77,9 @@ class TopologyOptimizer(Optimizer):
         beta_start: float = 1.0,
         beta_end: float = 1.0,
         patience: int = 1,
+        checkpoint_dir: Optional[Path] = None,
+        checkpoint_every: int = 10,
+        resume_from: Optional[Path] = None,
     ) -> None:
         """Gradient-ascent SIMP topology optimizer.
 
@@ -119,6 +124,21 @@ class TopologyOptimizer(Optimizer):
             ``tol`` before the run is declared converged and stopped early.
             The default of 1 reproduces the original single-iteration
             convergence test.
+        checkpoint_dir:
+            When set, write a compressed checkpoint (the current raw design
+            field, iteration index, current ``p``, current ``beta``, and the
+            FOM history so far) to ``checkpoint_dir/checkpoint.npz`` every
+            ``checkpoint_every`` iterations. ``None`` (default) disables
+            checkpointing entirely, leaving ``run`` behaviour unchanged.
+        checkpoint_every:
+            Iteration interval between checkpoint writes.
+        resume_from:
+            When set, load this checkpoint before the run starts and resume
+            from its saved raw design field, iteration index, ``p`` and
+            ``beta`` (continuing the SAME continuation schedule, keyed off
+            the restored absolute iteration, rather than restarting the ramp
+            from ``p_start``/``beta_start``) instead of starting from the
+            ``initial`` field passed to :meth:`run`.
         """
         self.step_size = float(step_size)
         self.max_iter = int(max_iter)
@@ -132,6 +152,9 @@ class TopologyOptimizer(Optimizer):
         self.beta_start = float(beta_start)
         self.beta_end = float(beta_end)
         self.patience = int(patience)
+        self.checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir is not None else None
+        self.checkpoint_every = int(checkpoint_every)
+        self.resume_from = Path(resume_from) if resume_from is not None else None
 
     # --- SIMP p / beta continuation schedule -----------------------------
 
@@ -252,17 +275,25 @@ class TopologyOptimizer(Optimizer):
         return grad
 
     def run(self, initial: Field, oracle, objective, constraint=None) -> OptimizeResult:
-        x = initial.copy()
-        history = []
+        start_iter = 0
+        if self.resume_from is not None:
+            # Warm start: resume the raw design and the absolute iteration
+            # count from the checkpoint, so the p/beta continuation schedule
+            # (a function of that absolute iteration) picks up exactly where
+            # it left off instead of restarting at p_start/beta_start.
+            x, start_iter, _, _, history = load_checkpoint(self.resume_from)
+        else:
+            x = initial.copy()
+            history = []
         used_fd = False
         converged = False
-        prev_fom = None
-        iterations = 0
+        prev_fom = history[-1] if history else None
+        iterations = start_iter
         best_fom = -np.inf
         best_field = None
         stall_count = 0
 
-        for i in range(self.max_iter):
+        for i in range(start_iter, self.max_iter):
             iterations = i + 1
             p = self._current_p(i)
             beta = self._current_beta(i)
@@ -297,6 +328,14 @@ class TopologyOptimizer(Optimizer):
             x.values = x.values + self.step_size * g
             if self.bounds is not None:
                 np.clip(x.values, self.bounds[0], self.bounds[1], out=x.values)
+
+            if (
+                self.checkpoint_dir is not None
+                and iterations % self.checkpoint_every == 0
+            ):
+                save_checkpoint(
+                    checkpoint_path(self.checkpoint_dir), x, iterations, p, beta, history
+                )
 
         final_p = self._current_p(max(0, iterations - 1))
         final_beta = self._current_beta(max(0, iterations - 1))

@@ -36,8 +36,36 @@ def _result_from_opt(opt, objective, constraint) -> DesignResult:
 
 class Engine:
     def run(
-        self, spec, export_dir=None, print_params=None, iso_value: float = 0.5
+        self,
+        spec,
+        export_dir=None,
+        print_params=None,
+        iso_value: float = 0.5,
+        checkpoint_dir=None,
+        checkpoint_every=None,
+        resume_from=None,
     ) -> DesignResult:
+        """Run ``spec`` through its optimizer.
+
+        ``checkpoint_dir``/``checkpoint_every``/``resume_from``, when given,
+        are set onto ``spec.optimizer`` before it runs (overriding whatever
+        the optimizer was constructed with), threading the checkpoint/resume
+        contract that :class:`~morphos.optimize.topopt.TopologyOptimizer` and
+        :class:`~morphos.optimize.parametric.ParametricOptimizer` both expose
+        through to the engine entry point, so callers do not need to reach
+        into the optimizer object directly. Optimizers that already have
+        these attributes set (constructed with them directly) are left
+        unchanged when the corresponding ``Engine.run`` argument is omitted.
+        """
+        from pathlib import Path
+
+        if checkpoint_dir is not None and hasattr(spec.optimizer, "checkpoint_dir"):
+            spec.optimizer.checkpoint_dir = Path(checkpoint_dir)
+        if checkpoint_every is not None and hasattr(spec.optimizer, "checkpoint_every"):
+            spec.optimizer.checkpoint_every = int(checkpoint_every)
+        if resume_from is not None and hasattr(spec.optimizer, "resume_from"):
+            spec.optimizer.resume_from = Path(resume_from)
+
         if isinstance(spec, ParametricSpec):
             opt = spec.optimizer.run(
                 spec.initial_params,
