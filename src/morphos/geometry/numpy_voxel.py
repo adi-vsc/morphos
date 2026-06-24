@@ -13,6 +13,7 @@ import numpy as np
 
 from morphos.field import Field
 from morphos.geometry.kernel import GeometryKernel
+from morphos.geometry.tpms import diamond_sdf, gyroid_sdf, schwartz_p_sdf
 
 
 class VoxelKernel(GeometryKernel):
@@ -26,9 +27,16 @@ class VoxelKernel(GeometryKernel):
             values = self._box(spec["center"], spec["half_extent"])
         elif primitive == "slab":
             values = self._slab(int(spec["axis"]), float(spec["lo"]), float(spec["hi"]))
+        elif primitive in ("gyroid", "schwartz_p", "diamond"):
+            return self._tpms(primitive, float(spec["period"]), float(spec["thickness"]))
         else:
             raise ValueError(f"unknown primitive: {primitive!r}")
         return Field(values, self.spacing)
+
+    def _tpms(self, primitive: str, period: float, thickness: float) -> Field:
+        blank = Field(np.zeros(self.grid_shape), self.spacing)
+        fn = {"gyroid": gyroid_sdf, "schwartz_p": schwartz_p_sdf, "diamond": diamond_sdf}[primitive]
+        return fn(blank, period=period, thickness=thickness)
 
     def _sphere(self, center, radius: float) -> np.ndarray:
         grids = self.coordinate_grids()

@@ -22,12 +22,27 @@ import numpy as np
 from morphos.field import Field
 from morphos.geometry import _picogk_native as _native
 from morphos.geometry.kernel import GeometryKernel
+from morphos.geometry.tpms import diamond_sdf, gyroid_sdf, schwartz_p_sdf
+
+_TPMS_PRIMITIVES = {"gyroid": gyroid_sdf, "schwartz_p": schwartz_p_sdf, "diamond": diamond_sdf}
 
 
 class PicoGKKernel(GeometryKernel):
     """Production PicoGK backend: builds a solid signed-distance Field."""
 
     def build(self, spec: dict, picogk_voxel_mm: float | None = None) -> Field:
+        primitive = spec.get("primitive")
+        if primitive in _TPMS_PRIMITIVES:
+            # TPMS sheets are closed-form analytic SDFs -- no native mesh or
+            # voxel primitive is needed, so this path skips the native-runtime
+            # requirement entirely and evaluates directly on the kernel grid.
+            if len(self.grid_shape) != 3:
+                raise ValueError("PicoGKKernel builds on a 3D grid")
+            blank = Field(np.zeros(self.grid_shape), self.spacing)
+            return _TPMS_PRIMITIVES[primitive](
+                blank, period=float(spec["period"]), thickness=float(spec["thickness"])
+            )
+
         if not _native.picogk_available():
             raise RuntimeError(
                 "native PicoGK runtime is not available; set $PICOGK_NATIVE_DIR "
@@ -38,7 +53,6 @@ class PicoGKKernel(GeometryKernel):
         if max(self.spacing) - min(self.spacing) > 1e-12:
             raise ValueError("PicoGKKernel assumes isotropic voxel spacing")
 
-        primitive = spec.get("primitive")
         voxel_mm = self.spacing[0]
         # PicoGK can build at a different (still isotropic) voxel size than the
         # kernel grid requests; default to matching exactly (no resample needed).
