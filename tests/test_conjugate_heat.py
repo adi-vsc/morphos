@@ -152,3 +152,106 @@ def test_peclet_scaling_matches_analytic_1d():
     x = np.arange(nnx) * h
     analytic = (np.exp(Pe * x / L) - 1.0) / (np.exp(Pe) - 1.0)
     assert np.allclose(T[0, :], analytic, atol=2e-3)
+
+
+def _inlet_nodes_3d(nnz, nny, nnx):
+    """Flat node indices on the x=0 face of a (nnz, nny, nnx) node grid,
+    row-major flatten matching ConjugateHeatOracle's 3D node ordering."""
+    nodes = []
+    for iz in range(nnz):
+        for iy in range(nny):
+            nodes.append((iz * nny + iy) * nnx + 0)
+    return nodes
+
+
+def test_conjugate_heat_3d_is_a_physics_oracle():
+    shape = (3, 4, 5)  # (nelz, nely, nelx)
+    nelz, nely, nelx = shape
+    nnz, nny, nnx = nelz + 1, nely + 1, nelx + 1
+    o = ConjugateHeatOracle(
+        shape=shape,
+        velocity=np.zeros((nnz, nny, nnx, 3)),
+        source=np.ones(shape),
+        fixed_nodes=_inlet_nodes_3d(nnz, nny, nnx),
+        fixed_values=[0.0] * (nnz * nny),
+    )
+    assert isinstance(o, PhysicsOracle)
+    assert o.provides_gradient is True
+    r = o.solve(Field(0.5 * np.ones(shape), spacing=1.0))
+    assert np.isfinite(r.value)
+    assert r.gradient.shape == shape
+    assert r.aux["temperature"].shape == (nnz, nny, nnx)
+
+
+def test_conjugate_heat_3d_adjoint_passes_fd_gate():
+    shape = (3, 3, 4)  # (nelz, nely, nelx)
+    nelz, nely, nelx = shape
+    nnz, nny, nnx = nelz + 1, nely + 1, nelx + 1
+    rng = np.random.default_rng(11)
+    vel = np.zeros((nnz, nny, nnx, 3))
+    vel[..., 0] = 0.7  # uniform crossflow along x
+    vel[..., 1] = 0.2 * rng.uniform(size=(nnz, nny, nnx))
+    vel[..., 2] = 0.2 * rng.uniform(size=(nnz, nny, nnx))
+    fixed = _inlet_nodes_3d(nnz, nny, nnx)
+    o = ConjugateHeatOracle(
+        shape=shape, velocity=vel, source=np.ones(shape),
+        fixed_nodes=fixed, fixed_values=[0.0] * len(fixed),
+        k_solid=2.0, k_fluid=0.1, rho_cp=1.0, p_simp=3.0,
+    )
+    x0 = 0.3 + 0.6 * rng.uniform(size=shape)
+    grad = o.solve(Field(x0, spacing=1.0)).gradient
+    f = lambda x: o.solve(Field(x, spacing=1.0)).value
+    fd_gate(f, grad, x0, rel=1e-4)
+
+
+def test_conjugate_heat_3d_zero_velocity_matches_hex8_conduction():
+    """With u=0 the 3D oracle must reduce to the SIMP conduction system,
+    verified against an independent Hex8 finite-element assembly."""
+    from morphos.physics.operators import hex8_diffusion_stiffness
+
+    shape = (2, 3, 4)
+    nelz, nely, nelx = shape
+    nnz, nny, nnx = nelz + 1, nely + 1, nelx + 1
+    h = 1.0
+    rng = np.random.default_rng(3)
+    rho = 0.3 + 0.6 * rng.uniform(size=shape)
+    Q = rng.uniform(size=shape)
+    fixed = _inlet_nodes_3d(nnz, nny, nnx)
+    o = ConjugateHeatOracle(
+        shape=shape,
+        velocity=np.zeros((nnz, nny, nnx, 3)),
+        source=Q,
+        fixed_nodes=fixed,
+        fixed_values=[0.0] * len(fixed),
+        k_solid=2.0, k_fluid=0.1, p_simp=3.0,
+    )
+    T_oracle = o.solve(Field(rho, spacing=h)).aux["temperature"]
+
+    n_nodes = nnz * nny * nnx
+    k_e = 0.1 + rho.ravel() ** 3 * (2.0 - 0.1)
+    Ke0 = hex8_diffusion_stiffness(1.0, h)
+    rows, cols, vals, f = [], [], [], np.zeros(n_nodes)
+    e = 0
+    for iz in range(nelz):
+        for iy in range(nely):
+            for ix in range(nelx):
+                n0 = (iz * nny + iy) * nnx + ix
+                n1 = (iz * nny + iy) * nnx + (ix + 1)
+                n2 = (iz * nny + (iy + 1)) * nnx + (ix + 1)
+                n3 = (iz * nny + (iy + 1)) * nnx + ix
+                n4 = ((iz + 1) * nny + iy) * nnx + ix
+                n5 = ((iz + 1) * nny + iy) * nnx + (ix + 1)
+                n6 = ((iz + 1) * nny + (iy + 1)) * nnx + (ix + 1)
+                n7 = ((iz + 1) * nny + (iy + 1)) * nnx + ix
+                nodes = [n0, n1, n2, n3, n4, n5, n6, n7]
+                Ke = k_e[e] * Ke0
+                for a in range(8):
+                    f[nodes[a]] += Q.ravel()[e] * (h ** 3 / 8.0)
+                    for b in range(8):
+                        rows.append(nodes[a]); cols.append(nodes[b]); vals.append(Ke[a, b])
+                e += 1
+    K = sparse.csr_matrix((vals, (rows, cols)), shape=(n_nodes, n_nodes))
+    free = np.setdiff1d(np.arange(n_nodes), fixed)
+    Tref = np.zeros(n_nodes)
+    Tref[free] = spsolve(K[np.ix_(free, free)].tocsc(), f[free])
+    assert np.allclose(T_oracle.ravel(), Tref, atol=1e-8)

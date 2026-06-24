@@ -2,7 +2,7 @@
 velocity field -- the engine's first oracle that couples a fluid result into a
 thermal solve.
 
-It solves, on a structured 2D quad grid,
+It solves, on a structured 2D quad or 3D hex grid,
 
     -div(k(rho) grad T) + rho_cp * (u . grad T) = Q,
 
@@ -32,6 +32,17 @@ Design choices that keep the adjoint exact and cheap (and are physically honest)
   -> maximising ``value``. The adjoint of the (non-symmetric) operator solves
   ``K^T lambda = c``; the gradient is ``+SIMP'(rho_e) * lambda_e^T Ke0 T_e``
   per element. FD-gated in ``tests/test_conjugate_heat.py``.
+
+3D follows the same recipe with the trilinear Hex8 element
+(:func:`morphos.physics.operators.hex8_diffusion_stiffness`) in place of Q4:
+8 nodes and trilinear shape functions instead of 4 nodes and bilinear ones, one
+extra velocity/gradient component, and a node grid ``(nelz+1, nely+1, nelx+1)``
+flattened row-major (z slowest, x fastest) -- exactly the layout
+:class:`~morphos.physics.stokes.StokesFlowOracle` uses for its 3D
+``aux["velocity"]`` grid, so a Stokes result feeds straight into this oracle's
+``velocity`` argument with no reshaping. Dimension is selected by
+``len(shape)``; the assembly loop, SUPG stabilisation, and adjoint sensitivity
+are written once per dimension but follow an identical structure.
 """
 
 from __future__ import annotations
@@ -43,7 +54,7 @@ from scipy import sparse
 
 from morphos.field import Field
 from morphos.physics._linsolve import solve_linear
-from morphos.physics.operators import q4_diffusion_stiffness
+from morphos.physics.operators import hex8_diffusion_stiffness, q4_diffusion_stiffness
 from morphos.physics.oracle import PhysicsOracle, PhysicsResult
 
 # Reference-element node ordering, shared with operators.q4_diffusion_stiffness:
@@ -52,6 +63,14 @@ _NODE_XI = np.array([-1.0, 1.0, 1.0, -1.0])
 _NODE_ETA = np.array([-1.0, -1.0, 1.0, 1.0])
 _GP = 1.0 / np.sqrt(3.0)
 _GAUSS = [(-_GP, -_GP), (_GP, -_GP), (_GP, _GP), (-_GP, _GP)]
+
+# Reference-element node ordering, shared with operators.hex8_diffusion_stiffness:
+# bottom face (zeta=-1) nodes 0..3 counterclockwise, then top face (zeta=1)
+# nodes 4..7 counterclockwise, matching hex8_stiffness's convention.
+_NODE_XI_3D = np.array([-1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0])
+_NODE_ETA_3D = np.array([-1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0])
+_NODE_ZETA_3D = np.array([-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0])
+_GAUSS_3D = [(a, b, c) for a in (-_GP, _GP) for b in (-_GP, _GP) for c in (-_GP, _GP)]
 
 
 def _shape_and_grads(h: float):
@@ -71,12 +90,35 @@ def _shape_and_grads(h: float):
     return Ns, Gs, det_j
 
 
+def _shape_and_grads_3d(h: float):
+    """Per-Gauss-point shape values ``N`` (8,) and physical gradients ``G``
+    (3, 8) for a cubic Hex8 element of side ``h``. Returns lists over the 8
+    quadrature points plus the common ``detJ``."""
+    inv_j = 2.0 / h
+    det_j = (h / 2.0) ** 3
+    Ns, Gs = [], []
+    for xi, eta, zeta in _GAUSS_3D:
+        N = (
+            0.125
+            * (1.0 + _NODE_XI_3D * xi)
+            * (1.0 + _NODE_ETA_3D * eta)
+            * (1.0 + _NODE_ZETA_3D * zeta)
+        )
+        dN_dxi = 0.125 * _NODE_XI_3D * (1.0 + _NODE_ETA_3D * eta) * (1.0 + _NODE_ZETA_3D * zeta)
+        dN_deta = 0.125 * _NODE_ETA_3D * (1.0 + _NODE_XI_3D * xi) * (1.0 + _NODE_ZETA_3D * zeta)
+        dN_dzeta = 0.125 * _NODE_ZETA_3D * (1.0 + _NODE_XI_3D * xi) * (1.0 + _NODE_ETA_3D * eta)
+        G = np.vstack([inv_j * dN_dxi, inv_j * dN_deta, inv_j * dN_dzeta])  # (3, 8)
+        Ns.append(N)
+        Gs.append(G)
+    return Ns, Gs, det_j
+
+
 class ConjugateHeatOracle(PhysicsOracle):
     provides_gradient = True
 
     def __init__(
         self,
-        shape: Tuple[int, int],
+        shape: Tuple[int, ...],
         velocity: np.ndarray,
         source: np.ndarray,
         fixed_nodes: Iterable[int] = (),
@@ -88,21 +130,24 @@ class ConjugateHeatOracle(PhysicsOracle):
         objective_nodes: Optional[Iterable[int]] = None,
         solver: Literal["direct", "iterative", "auto"] = "auto",
     ) -> None:
-        """Conjugate-heat oracle on a ``(nely, nelx)`` element grid.
+        """Conjugate-heat oracle on a structured 2D quad or 3D hex element grid.
 
         Parameters
         ----------
         shape:
-            ``(nely, nelx)`` number of elements. Nodes form a
-            ``(nely+1, nelx+1)`` grid.
+            ``(nely, nelx)`` in 2D or ``(nelz, nely, nelx)`` in 3D, number of
+            elements per axis. Nodes form a grid one larger per axis. Dimension
+            is selected by ``len(shape)``.
         velocity:
-            Frozen velocity field, shape ``(nely+1, nelx+1, 2)`` -- exactly the
-            ``aux["velocity"]`` grid returned by ``StokesFlowOracle`` in 2D.
+            Frozen velocity field on the node grid: shape
+            ``(nely+1, nelx+1, 2)`` in 2D or ``(nelz+1, nely+1, nelx+1, 3)`` in
+            3D -- exactly the ``aux["velocity"]`` grid returned by
+            ``StokesFlowOracle`` in the matching dimension.
         source:
-            Volumetric heat source ``Q`` per element, shape ``(nely, nelx)``.
+            Volumetric heat source ``Q`` per element, shape matching ``shape``.
         fixed_nodes, fixed_values:
             Dirichlet temperature BCs by flat node index (row-major over the
-            ``(nely+1, nelx+1)`` node grid).
+            node grid; in 3D, z slowest, x fastest).
         k_solid, k_fluid:
             Conductivity of the solid and fluid phase (SIMP endpoints).
         rho_cp:
@@ -122,20 +167,32 @@ class ConjugateHeatOracle(PhysicsOracle):
             since SA-AMG is built from the matrix as given and a transpose
             is a different matrix to the solver.
         """
-        if len(shape) != 2:
-            raise ValueError("ConjugateHeatOracle is 2D: shape must be (nely, nelx)")
-        nely, nelx = int(shape[0]), int(shape[1])
-        if nely < 1 or nelx < 1:
+        if len(shape) not in (2, 3):
+            raise ValueError(
+                "ConjugateHeatOracle supports 2D (nely, nelx) or "
+                "3D (nelz, nely, nelx) grids"
+            )
+        if any(int(s) < 1 for s in shape):
             raise ValueError("grid must have at least one element per axis")
-        self.shape = (nely, nelx)
-        self.nny, self.nnx = nely + 1, nelx + 1
-        self.n_nodes = self.nny * self.nnx
+        self.ndim = len(shape)
+        self.shape = tuple(int(s) for s in shape)
+
+        if self.ndim == 2:
+            nely, nelx = self.shape
+            self.nny, self.nnx = nely + 1, nelx + 1
+            self.n_nodes = self.nny * self.nnx
+            vel_shape = (self.nny, self.nnx, 2)
+        else:
+            nelz, nely, nelx = self.shape
+            self.nnz, self.nny, self.nnx = nelz + 1, nely + 1, nelx + 1
+            self.n_nodes = self.nnz * self.nny * self.nnx
+            vel_shape = (self.nnz, self.nny, self.nnx, 3)
 
         velocity = np.asarray(velocity, dtype=float)
-        if velocity.shape != (self.nny, self.nnx, 2):
+        if velocity.shape != vel_shape:
             raise ValueError(
-                f"velocity shape {velocity.shape} must be "
-                f"{(self.nny, self.nnx, 2)} (node grid x 2)"
+                f"velocity shape {velocity.shape} must be {vel_shape} "
+                f"(node grid x {self.ndim})"
             )
         self.velocity = velocity
 
@@ -172,19 +229,40 @@ class ConjugateHeatOracle(PhysicsOracle):
         self._amg_cache_adj: list = []
 
     def _element_node_table(self) -> np.ndarray:
-        """(nelem, 4) global node indices per element in reference node order."""
-        nely, nelx = self.shape
-        nnx = self.nnx
-        table = np.zeros((nely * nelx, 4), dtype=int)
+        """(nelem, nodes_per_elem) global node indices per element, in the
+        reference node order shared with operators.q4/hex8_diffusion_stiffness."""
+        if self.ndim == 2:
+            nely, nelx = self.shape
+            nnx = self.nnx
+            table = np.zeros((nely * nelx, 4), dtype=int)
+            e = 0
+            for iy in range(nely):
+                for ix in range(nelx):
+                    n0 = iy * nnx + ix
+                    n1 = iy * nnx + (ix + 1)
+                    n2 = (iy + 1) * nnx + (ix + 1)
+                    n3 = (iy + 1) * nnx + ix
+                    table[e] = (n0, n1, n2, n3)
+                    e += 1
+            return table
+
+        nelz, nely, nelx = self.shape
+        nny, nnx = self.nny, self.nnx
+        table = np.zeros((nelz * nely * nelx, 8), dtype=int)
         e = 0
-        for iy in range(nely):
-            for ix in range(nelx):
-                n0 = iy * nnx + ix
-                n1 = iy * nnx + (ix + 1)
-                n2 = (iy + 1) * nnx + (ix + 1)
-                n3 = (iy + 1) * nnx + ix
-                table[e] = (n0, n1, n2, n3)
-                e += 1
+        for iz in range(nelz):
+            for iy in range(nely):
+                for ix in range(nelx):
+                    n0 = (iz * nny + iy) * nnx + ix
+                    n1 = (iz * nny + iy) * nnx + (ix + 1)
+                    n2 = (iz * nny + (iy + 1)) * nnx + (ix + 1)
+                    n3 = (iz * nny + (iy + 1)) * nnx + ix
+                    n4 = ((iz + 1) * nny + iy) * nnx + ix
+                    n5 = ((iz + 1) * nny + iy) * nnx + (ix + 1)
+                    n6 = ((iz + 1) * nny + (iy + 1)) * nnx + (ix + 1)
+                    n7 = ((iz + 1) * nny + (iy + 1)) * nnx + ix
+                    table[e] = (n0, n1, n2, n3, n4, n5, n6, n7)
+                    e += 1
         return table
 
     def _simp(self, rho: np.ndarray) -> np.ndarray:
@@ -198,11 +276,19 @@ class ConjugateHeatOracle(PhysicsOracle):
         convection + SUPG operator, and the source load) once per spacing."""
         if self._cache_h == h:
             return
-        Ns, Gs, det_j = _shape_and_grads(h)
-        self._Ke0 = q4_diffusion_stiffness(1.0, h)  # unit-conductivity element
+        if self.ndim == 2:
+            Ns, Gs, det_j = _shape_and_grads(h)
+            self._Ke0 = q4_diffusion_stiffness(1.0, h)  # unit-conductivity element
+            npe = 4
+            vol_per_node = (h * h) / 4.0
+        else:
+            Ns, Gs, det_j = _shape_and_grads_3d(h)
+            self._Ke0 = hex8_diffusion_stiffness(1.0, h)
+            npe = 8
+            vol_per_node = (h ** 3) / 8.0
 
-        nelem = self.shape[0] * self.shape[1]
-        vel_flat = self.velocity.reshape(self.n_nodes, 2)
+        nelem = self._elem_nodes.shape[0]
+        vel_flat = self.velocity.reshape(self.n_nodes, self.ndim)
         Q = self.source.ravel()
 
         # Convection + SUPG assembled into a global non-symmetric operator, and
@@ -211,26 +297,27 @@ class ConjugateHeatOracle(PhysicsOracle):
         f = np.zeros(self.n_nodes)
         for e in range(nelem):
             nodes = self._elem_nodes[e]
-            u_nodes = vel_flat[nodes]  # (4, 2)
+            u_nodes = vel_flat[nodes]  # (npe, ndim)
             u_mean = u_nodes.mean(axis=0)
-            speed = float(np.hypot(u_mean[0], u_mean[1]))
+            speed = float(np.linalg.norm(u_mean))
             tau = self._supg_tau(speed, h)
 
-            Ce = np.zeros((4, 4))
-            Se = np.zeros((4, 4))
-            fe_supg = np.zeros(4)
+            Ce = np.zeros((npe, npe))
+            Se = np.zeros((npe, npe))
+            fe_supg = np.zeros(npe)
             for N, G in zip(Ns, Gs):
-                u_gp = N @ u_nodes  # (2,) velocity at the Gauss point
-                uG = u_gp @ G  # (4,) = u . grad(N_j)
+                u_gp = N @ u_nodes  # (ndim,) velocity at the Gauss point
+                uG = u_gp @ G  # (npe,) = u . grad(N_j)
                 Ce += self.rho_cp * np.outer(N, uG) * det_j
                 Se += tau * self.rho_cp ** 2 * np.outer(uG, uG) * det_j
                 fe_supg += tau * self.rho_cp * uG * (Q[e]) * det_j
             Ae = Ce + Se
-            # Galerkin source: Q_e * integral(N_i) = Q_e * (h^2/4) per node.
-            fe = Q[e] * (h * h / 4.0) * np.ones(4) + fe_supg
-            for a in range(4):
+            # Galerkin source: Q_e * integral(N_i) per node (uniform for the
+            # square/cube reference element: element volume / nodes_per_elem).
+            fe = Q[e] * vol_per_node * np.ones(npe) + fe_supg
+            for a in range(npe):
                 f[nodes[a]] += fe[a]
-                for b in range(4):
+                for b in range(npe):
                     rows.append(nodes[a])
                     cols.append(nodes[b])
                     vals.append(Ae[a, b])
@@ -258,12 +345,13 @@ class ConjugateHeatOracle(PhysicsOracle):
         """SIMP-scaled global diffusion stiffness for the current design."""
         k_e = self._simp(rho_elem)
         nelem = rho_elem.size
+        npe = self._Ke0.shape[0]
         rows, cols, vals = [], [], []
         for e in range(nelem):
             nodes = self._elem_nodes[e]
             Ke = k_e[e] * self._Ke0
-            for a in range(4):
-                for b in range(4):
+            for a in range(npe):
+                for b in range(npe):
                     rows.append(nodes[a])
                     cols.append(nodes[b])
                     vals.append(Ke[a, b])
@@ -275,7 +363,7 @@ class ConjugateHeatOracle(PhysicsOracle):
         if field.values.shape != self.shape:
             raise ValueError(
                 f"field shape {field.values.shape} does not match oracle "
-                f"shape {self.shape} (nely, nelx elements)"
+                f"shape {self.shape} (element grid)"
             )
         spacing = field.spacing
         if max(spacing) - min(spacing) > 1e-12:
@@ -335,7 +423,10 @@ class ConjugateHeatOracle(PhysicsOracle):
         # value = -J, so d(value)/drho = -dJ/drho.
         gradient = (-grad_elem).reshape(self.shape)
 
-        T_grid = T.reshape(self.nny, self.nnx)
+        node_shape = (self.nny, self.nnx) if self.ndim == 2 else (
+            self.nnz, self.nny, self.nnx
+        )
+        T_grid = T.reshape(node_shape)
         return PhysicsResult(
             value=value,
             gradient=gradient,

@@ -26,6 +26,8 @@ from morphos.physics.elasticity import ElasticityOracle
 from morphos.physics.darcy import DarcyFlowOracle
 from morphos.physics.thermoelastic import ThermoElasticOracle
 from morphos.physics.stokes import StokesFlowOracle
+from morphos.physics.conjugate_heat import ConjugateHeatOracle
+from morphos.physics.fdtd3d import FDTD3DOracle
 from morphos.intent import (
     DesignIntent,
     CantileverIntent,
@@ -79,6 +81,8 @@ __all__ = [
     "DarcyFlowOracle",
     "ThermoElasticOracle",
     "StokesFlowOracle",
+    "ConjugateHeatOracle",
+    "FDTD3DOracle",
     "DesignIntent",
     "CantileverIntent",
     "ChannelIntent",
