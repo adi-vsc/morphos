@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field as _dc_field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 
@@ -59,6 +59,13 @@ class CoupledSpec:
     A single ``optimizer`` is shared across stages (every stage optimises the same
     density Field, so one topology optimiser suffices); per-stage objectives and
     constraints differ.
+
+    ``coupling_mode`` selects the outer coupling strategy: ``"staggered"``
+    (default, preserves existing behaviour) runs the stage loop described
+    above; ``"monolithic"`` instead solves every stage's oracle as a single
+    one-shot block system per outer iteration (see
+    :class:`morphos.physics.coupled.MonolithicCoupledOracle`), appropriate
+    when a stage's oracle is itself a monolithic coupled oracle.
     """
 
     stages: List[Tuple[PhysicsOracle, Objective, object]]
@@ -66,6 +73,7 @@ class CoupledSpec:
     initial_field: Field
     passthrough: Dict[int, List[str]] = _dc_field(default_factory=dict)
     n_outer: int = 1
+    coupling_mode: Literal["staggered", "monolithic"] = "staggered"
     name: str = ""
 
 

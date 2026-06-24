@@ -86,18 +86,32 @@ class Engine:
 
 
 class CoupledEngine:
-    """Orchestrates a multi-stage staggered (operator-split) optimization.
+    """Orchestrates a multi-stage coupled optimization, staggered or monolithic.
 
-    Algorithm: for each of ``n_outer`` outer iterations, run every stage's
-    optimizer to convergence on the shared design Field, in order; after each
-    stage re-solve its oracle once to recover the ``aux`` quantities and forward
-    any ``passthrough`` attributes into the next stage's oracle. Returns one
-    ``DesignResult`` per stage from the final outer iteration.
+    Staggered (``spec.coupling_mode == "staggered"``, the default): for each of
+    ``n_outer`` outer iterations, run every stage's optimizer to convergence on
+    the shared design Field, in order; after each stage re-solve its oracle once
+    to recover the ``aux`` quantities and forward any ``passthrough`` attributes
+    into the next stage's oracle. Returns one ``DesignResult`` per stage from the
+    final outer iteration.
+
+    Monolithic (``spec.coupling_mode == "monolithic"``): each stage's oracle is
+    expected to already solve its physics jointly in one shot (e.g.
+    :class:`morphos.physics.coupled.MonolithicCoupledOracle`), so there is no
+    outer fixed-point loop or passthrough step to run -- every stage's optimizer
+    runs exactly once, in order, on the shared field. This is the dispatch point
+    that keeps the staggered path's code and behaviour completely unchanged
+    while giving callers a one-shot alternative for strongly coupled physics.
     """
 
     def run(self, spec: CoupledSpec) -> List[DesignResult]:
         if not spec.stages:
             raise ValueError("CoupledSpec has no stages")
+        if spec.coupling_mode == "monolithic":
+            return self._run_monolithic(spec)
+        return self._run_staggered(spec)
+
+    def _run_staggered(self, spec: CoupledSpec) -> List[DesignResult]:
         field = spec.initial_field
         stage_results: List[DesignResult] = []
 
@@ -120,4 +134,13 @@ class CoupledEngine:
                 stage_aux[i] = oracle.solve(field).aux
                 stage_results.append(_result_from_opt(opt, objective, constraint))
 
+        return stage_results
+
+    def _run_monolithic(self, spec: CoupledSpec) -> List[DesignResult]:
+        field = spec.initial_field
+        stage_results: List[DesignResult] = []
+        for oracle, objective, constraint in spec.stages:
+            opt = spec.optimizer.run(field, oracle, objective, constraint)
+            field = opt.field
+            stage_results.append(_result_from_opt(opt, objective, constraint))
         return stage_results
