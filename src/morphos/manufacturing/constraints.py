@@ -513,3 +513,51 @@ class Connectivity(ManufacturabilityConstraint):
         mask = field.values >= self.threshold
         _, num = ndimage.label(mask)
         return {"num_components": int(num), "connected": bool(num == 1)}
+
+
+class VolumeConstraint(ManufacturabilityConstraint):
+    """Volume-preserving projection onto a target volume fraction.
+
+    The projection shifts the density field by a single scalar ``c``, clipped to
+    [0, 1], chosen so the mean density equals ``target_fraction``. This is the
+    standard SIMP volume control written as a projection onto the constant-volume
+    set. The shift is found by bisection on ``c`` (the clipped mean is monotone
+    increasing in ``c``), and the vector Jacobian product is the clip mask of the
+    shifted field: identity on unsaturated voxels, zero where the clip is active.
+    """
+
+    def __init__(self, target_fraction: float) -> None:
+        if not 0.0 < float(target_fraction) < 1.0:
+            raise ValueError(
+                f"target_fraction must lie in (0, 1), got {target_fraction}"
+            )
+        self.target = float(target_fraction)
+
+    def _shift(self, values: np.ndarray) -> float:
+        """Bisection for the scalar shift ``c`` with mean(clip(v + c, 0, 1)) == target."""
+        v = np.asarray(values, dtype=float)
+        lo, hi = -1.0, 1.0
+        for _ in range(100):
+            mid = 0.5 * (lo + hi)
+            m = np.clip(v + mid, 0.0, 1.0).mean()
+            if m < self.target:
+                lo = mid
+            else:
+                hi = mid
+        return 0.5 * (lo + hi)
+
+    def project(self, field: Field) -> Field:
+        c = self._shift(field.values)
+        return field.like(np.clip(field.values + c, 0.0, 1.0))
+
+    def vjp(self, field: Field, grad: np.ndarray) -> np.ndarray:
+        c = self._shift(field.values)
+        shifted = np.asarray(field.values, dtype=float) + c
+        mask = (shifted > 0.0) & (shifted < 1.0)
+        return grad * mask
+
+    def report(self, field: Field) -> dict:
+        return {
+            "volume_fraction": float(np.clip(field.values, 0.0, 1.0).mean()),
+            "target_volume_fraction": self.target,
+        }

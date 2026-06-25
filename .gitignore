@@ -20,9 +20,12 @@ htmlcov/
 
 # Output artifacts
 out/
+output/
+checkpoints/
 runs/
 *.npz
 *.vtk
+*.stl
 
 # AI-tooling artifacts (never ship on the public engine surface)
 .claude/

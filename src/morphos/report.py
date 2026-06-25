@@ -108,6 +108,19 @@ def _quantities_for(oracle: PhysicsOracle, aux: dict) -> dict:
             "mean_temperature_K": float(np.mean(T)),
             "temperature_range_K": float(np.max(T) - np.min(T)),
         }
+    # ConjugateHeatOracle (advection-diffusion) exposes a nodal temperature field
+    # like pure conduction, plus a thermal-resistance summary keyed on the
+    # temperature spread, which is what the heat-exchanger objective minimises.
+    from morphos.physics.conjugate_heat import ConjugateHeatOracle
+
+    if isinstance(oracle, ConjugateHeatOracle):
+        T = np.asarray(aux["temperature"])
+        return {
+            "peak_temperature_K": float(np.max(T)),
+            "mean_temperature_K": float(np.mean(T)),
+            "temperature_range_K": float(np.max(T) - np.min(T)),
+            "thermal_resistance_K_per_W": float(np.max(T) - np.min(T)),
+        }
     # ThermoElastic precedes Elasticity is unnecessary (distinct types), but it
     # exposes both a structural and a thermal quantity.
     if isinstance(oracle, ThermoElasticOracle):
