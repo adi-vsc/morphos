@@ -14,6 +14,9 @@ library of validated templates first -- see docs/strategy.
 
 from __future__ import annotations
 
+import functools
+import inspect
+import json
 from abc import ABC, abstractmethod
 
 import numpy as np
@@ -47,12 +50,95 @@ def _check_volume_fraction(volume_fraction: float) -> float:
     return vf
 
 
+def _intent_registry() -> dict:
+    """Every concrete :class:`DesignIntent` subclass keyed by class name."""
+    registry: dict = {}
+
+    def collect(cls):
+        for sub in cls.__subclasses__():
+            registry[sub.__name__] = sub
+            collect(sub)
+
+    collect(DesignIntent)
+    return registry
+
+
+def _jsonable(value):
+    """Coerce a captured constructor argument into a JSON-safe value (tuples and
+    numpy scalars/arrays become lists/Python scalars)."""
+    if isinstance(value, tuple):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, list):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    return value
+
+
 class DesignIntent(ABC):
-    """Base for a builder that turns engineering quantities into a DesignSpec."""
+    """Base for a builder that turns engineering quantities into a DesignSpec.
+
+    Every concrete intent's constructor arguments are captured at construction
+    time (see :meth:`__init_subclass__`), which makes an intent the one design
+    object in the engine that round-trips losslessly through JSON: a built
+    DesignSpec cannot, because its oracle consumes the boundary conditions into
+    solver-internal state at construction. Serialise at the intent layer.
+    """
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        original_init = cls.__init__
+
+        @functools.wraps(original_init)
+        def _capturing_init(self, *args, **kw):
+            bound = inspect.signature(original_init).bind(self, *args, **kw)
+            bound.apply_defaults()
+            self._init_params = {
+                name: value
+                for name, value in bound.arguments.items()
+                if name != "self"
+            }
+            original_init(self, *args, **kw)
+
+        cls.__init__ = _capturing_init
 
     @abstractmethod
     def build(self) -> DesignSpec:
         raise NotImplementedError
+
+    def to_dict(self) -> dict:
+        """The intent as a JSON-safe spec dict (Shape A): a ``version``, the
+        intent class name, and its exact constructor parameters."""
+        params = {k: _jsonable(v) for k, v in getattr(self, "_init_params", {}).items()}
+        return {"version": "1.0", "intent": type(self).__name__, "params": params}
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "DesignIntent":
+        """Reconstruct an intent from a Shape A spec dict, resolving the intent
+        class by name from the registry of all concrete subclasses."""
+        name = data.get("intent")
+        if name is None:
+            raise ValueError(
+                "spec dict has no intent: expected an 'intent' key naming a "
+                f"DesignIntent subclass, found keys {sorted(data)}"
+            )
+        registry = _intent_registry()
+        if name not in registry:
+            raise ValueError(
+                f"unknown intent {name!r}: expected one of {sorted(registry)}"
+            )
+        return registry[name](**data.get("params", {}))
+
+    def to_json(self) -> str:
+        """Serialise this intent to a JSON string (Shape A)."""
+        return json.dumps(self.to_dict())
+
+    @classmethod
+    def from_json(cls, s: str) -> "DesignIntent":
+        """Reconstruct an intent from a JSON string (Shape A)."""
+        return cls.from_dict(json.loads(s))
 
 
 class CantileverIntent(DesignIntent):

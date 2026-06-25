@@ -10,7 +10,6 @@ errors, and ``--debug`` to surface a full traceback instead of a clean message.
 from __future__ import annotations
 
 import argparse
-import json
 import struct
 import sys
 import traceback
@@ -21,7 +20,7 @@ import numpy as np
 
 import morphos
 from morphos.intent import DesignIntent
-from morphos.spec import CoupledSpec, DesignSpec
+from morphos.spec import CoupledSpec
 
 
 def _safe_print(text: str) -> None:
@@ -34,58 +33,6 @@ def _safe_print(text: str) -> None:
 def _error(message: str) -> None:
     """Report a clean, single-line error on stderr (shown even under --quiet)."""
     sys.stderr.write(f"error: {message}\n")
-
-
-# --- spec loading -------------------------------------------------------------
-
-
-def _intent_registry() -> dict:
-    """All concrete ``DesignIntent`` subclasses keyed by class name."""
-    registry: dict = {}
-
-    def collect(cls):
-        for sub in cls.__subclasses__():
-            registry[sub.__name__] = sub
-            collect(sub)
-
-    collect(DesignIntent)
-    return registry
-
-
-def _load_spec(path):
-    """Load a spec JSON file into a ``DesignIntent`` (shape A) or a
-    ``DesignSpec`` (shape B). Raises with a message stating what was expected
-    and what was found."""
-    p = Path(path)
-    if not p.exists():
-        raise FileNotFoundError(
-            f"spec file not found: expected a readable JSON file, found nothing at {p}"
-        )
-    try:
-        data = json.loads(p.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as exc:
-        raise ValueError(
-            f"spec file is not valid JSON: expected a JSON object, found a parse "
-            f"error in {p} ({exc})"
-        ) from exc
-
-    if "intent" in data:
-        name = data["intent"]
-        registry = _intent_registry()
-        if name not in registry:
-            raise ValueError(
-                f"unknown intent {name!r}: expected one of {sorted(registry)}"
-            )
-        params = data.get("params", {})
-        return registry[name](**params)
-
-    if "spec" in data:
-        return DesignSpec.from_dict(data["spec"])
-
-    raise ValueError(
-        "spec file has no design: expected an 'intent' key (shape A) or a "
-        "'spec' key (shape B), found neither"
-    )
 
 
 # --- run ----------------------------------------------------------------------
@@ -131,7 +78,7 @@ def _print_run_summary(result) -> None:
 
 def _cmd_run(args) -> int:
     try:
-        spec = _load_spec(args.spec_file)
+        spec = morphos.from_json(args.spec_file)
     except Exception as exc:  # noqa: BLE001 - surface a clean message to the user
         if args.debug:
             traceback.print_exc()
@@ -170,7 +117,7 @@ def _dof_per_node(oracle, ndim: int) -> int:
 
 def _cmd_info(args) -> int:
     try:
-        spec = _load_spec(args.spec_file)
+        spec = morphos.from_json(args.spec_file)
     except Exception as exc:  # noqa: BLE001
         if args.debug:
             traceback.print_exc()

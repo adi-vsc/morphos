@@ -9,6 +9,7 @@ from morphos.field import Field
 from morphos.spec import DesignSpec, ParametricSpec, DesignResult
 from morphos.engine import Engine, CoupledEngine
 from morphos.api import run, MorphosResult
+from morphos.api.spec_io import from_json, to_json
 from morphos.objective.objective import (
     Objective,
     ObjectiveValue,
@@ -68,6 +69,8 @@ __all__ = [
     "CoupledEngine",
     "run",
     "MorphosResult",
+    "from_json",
+    "to_json",
     "Objective",
     "ObjectiveValue",
     "MaximizeValue",
