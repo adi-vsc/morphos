@@ -69,7 +69,13 @@ class ParametricOptimizer:
         oracle,
         objective,
         constraint=None,
+        on_iteration=None,
     ) -> OptimizeResult:
+        # ``on_iteration`` is accepted for a uniform Engine.run() optimizer
+        # contract. The L-BFGS-B path is driven by scipy.optimize.minimize and
+        # does not expose a per-evaluation hook with the (fom, delta, p, beta)
+        # signature the topology optimizer reports, so the callback is left
+        # unwired here rather than fed misleading values.
         if self.resume_from is not None:
             # Warm start: resume the parameter vector (stored as a 1-D Field
             # in the checkpoint's field slot) and history; L-BFGS-B itself

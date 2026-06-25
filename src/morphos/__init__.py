@@ -7,7 +7,8 @@ product is a new backend behind the same interfaces, not a rewrite.
 
 from morphos.field import Field
 from morphos.spec import DesignSpec, ParametricSpec, DesignResult
-from morphos.engine import Engine
+from morphos.engine import Engine, CoupledEngine
+from morphos.api import run, MorphosResult
 from morphos.objective.objective import (
     Objective,
     ObjectiveValue,
@@ -64,6 +65,9 @@ __all__ = [
     "ParametricSpec",
     "DesignResult",
     "Engine",
+    "CoupledEngine",
+    "run",
+    "MorphosResult",
     "Objective",
     "ObjectiveValue",
     "MaximizeValue",

@@ -274,7 +274,9 @@ class TopologyOptimizer(Optimizer):
             it.iternext()
         return grad
 
-    def run(self, initial: Field, oracle, objective, constraint=None) -> OptimizeResult:
+    def run(
+        self, initial: Field, oracle, objective, constraint=None, on_iteration=None
+    ) -> OptimizeResult:
         start_iter = 0
         if self.resume_from is not None:
             # Warm start: resume the raw design and the absolute iteration
@@ -302,6 +304,10 @@ class TopologyOptimizer(Optimizer):
             design, filtered = self._design_chain(x, beta, constraint)
             ov = _evaluate(design, oracle, objective)
             history.append(ov.fom)
+
+            if on_iteration is not None:
+                delta = abs(ov.fom - prev_fom) if prev_fom is not None else 0.0
+                on_iteration(iterations, ov.fom, delta, p, beta)
 
             # Track the best design seen. Fixed-step ascent can overshoot on a
             # non-convex problem, so the last design is not always the best.

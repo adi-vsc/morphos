@@ -44,6 +44,7 @@ class Engine:
         checkpoint_dir=None,
         checkpoint_every=None,
         resume_from=None,
+        on_iteration=None,
     ) -> DesignResult:
         """Run ``spec`` through its optimizer.
 
@@ -73,10 +74,15 @@ class Engine:
                 spec.oracle,
                 spec.objective,
                 spec.constraint,
+                on_iteration=on_iteration,
             )
         else:
             opt = spec.optimizer.run(
-                spec.initial, spec.oracle, spec.objective, spec.constraint
+                spec.initial,
+                spec.oracle,
+                spec.objective,
+                spec.constraint,
+                on_iteration=on_iteration,
             )
 
         bound = spec.objective.bound()
