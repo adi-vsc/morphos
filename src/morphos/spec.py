@@ -2,7 +2,7 @@
 
 A DesignSpec wires together the swappable pieces (geometry, physics, objective,
 optimizer, manufacturability) for one design run. A DesignResult carries the
-optimized geometry and, crucially, the margin to the physical limit.
+optimized geometry and the gap to a user-supplied reference bound.
 """
 
 from __future__ import annotations

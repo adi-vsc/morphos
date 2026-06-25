@@ -23,6 +23,7 @@ out/
 output/
 checkpoints/
 runs/
+showcase/
 *.npz
 *.vtk
 *.stl
@@ -37,9 +38,8 @@ graphify-out/
 .DS_Store
 Thumbs.db
 
-# Consolidation areas (kept on disk as the single home, off the public engine surface)
-# Internal strategy docs never ship in a public repo.
-docs/strategy/
+# Working docs and notes (kept on disk, off the public engine surface).
+docs/
 # Absorbed but not-yet-wired code, preserved to mine into backends later.
 reference/
 # Worked case studies (bio, deprioritized for now).

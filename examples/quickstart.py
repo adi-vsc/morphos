@@ -2,8 +2,8 @@
 
 This uses the dependency-light analytic oracle, whose optimum is known, to show
 the whole pipeline running: geometry as a Field, an inverse-design loop, a
-manufacturability report, and the margin to the physical limit. Swap the oracle
-for the electromagnetic backend and the same engine designs a real device.
+manufacturability report, and the gap to a reference bound. Swap the oracle
+for the electromagnetic backend and the same engine drives a different physics.
 
 Run:
     python examples/quickstart.py
@@ -44,8 +44,8 @@ def main() -> None:
     print(f"converged:            {result.converged}")
     print(f"used finite diff:     {result.used_finite_differences}")
     print(f"figure of merit:      {result.figure_of_merit:.3e}")
-    print(f"physical ceiling:     {result.bound.value:.3e} ({result.bound.name})")
-    print(f"margin to ceiling:    {result.margin:.3e}")
+    print(f"reference bound:      {result.bound.value:.3e} ({result.bound.name})")
+    print(f"gap to bound:         {result.margin:.3e}")
     print(f"manufacturability:    {result.manufacturability}")
     recovered = np.allclose(result.field.values, target, atol=1e-3)
     print(f"recovered target:     {recovered}")

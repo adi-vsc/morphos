@@ -1,10 +1,18 @@
-"""Objective: turns a physics result into a figure of merit, and knows the limit.
+"""Objective: turns a physics result into a figure of merit, and a reference bound.
 
 The objective maps a :class:`~morphos.physics.oracle.PhysicsResult` to a scalar
 figure of merit that the optimizer maximizes, carrying the gradient through by
-the chain rule. It can also expose a :class:`PhysicalBound`, the best value
-physics allows, so a result can report how close to the limit it reached. That
-margin to the limit is a first-class output of the engine, not an afterthought.
+the chain rule. It can also expose a :class:`PhysicalBound`: a *reference*
+performance ceiling supplied for the problem, so a result can report how close
+it got to that reference. The gap to the bound is a first-class output of the
+engine.
+
+Note on bounds: a ``PhysicalBound`` is whatever reference the caller passes in.
+The built-in intents currently use simple theoretical ceilings (e.g. zero
+compliance for a structural problem -- an infinitely stiff, physically
+unattainable reference). These are fixed yardsticks, *not* tight problem-specific
+optimality bounds (such as a Michell or Hashin-Shtrikman bound). Read the
+reported gap accordingly.
 """
 
 from __future__ import annotations
@@ -28,9 +36,11 @@ class ObjectiveValue:
 
 @dataclass
 class PhysicalBound:
-    """The best figure of merit physics allows for a problem.
+    """A reference performance ceiling for a problem, supplied by the caller.
 
-    ``value`` is the attainable ceiling of the (maximized) figure of merit.
+    ``value`` is a reference ceiling for the (maximized) figure of merit. It is
+    a fixed yardstick to measure the gap against, not necessarily a tight,
+    provably-attainable optimum (see the module docstring).
     """
 
     value: float
@@ -55,7 +65,7 @@ class Objective(ABC):
         raise NotImplementedError
 
     def bound(self) -> Optional[PhysicalBound]:
-        """The physical limit for this objective, or None if unknown."""
+        """The reference bound for this objective, or None if none is set."""
         return None
 
 

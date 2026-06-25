@@ -1,0 +1,321 @@
+{
+  "meta": {
+    "generated": "2026-06-25 17:52 UTC",
+    "python": "3.10.12",
+    "numpy": "2.2.6",
+    "scipy": "1.15.3",
+    "platform": "Linux-6.8.0-124-generic-x86_64-with-glibc2.35",
+    "seed": 0,
+    "skipped": [],
+    "scikit-fem": "12.0.2"
+  },
+  "results": [
+    {
+      "case": "heat-conduction (MMS)",
+      "reference_type": "analytic (manufactured solution)",
+      "qoi": "rel. L2 temperature error, 129x129 grid",
+      "morphos": 5.020091590932162e-05,
+      "reference": 0.0,
+      "rel_error": 5.020091590932162e-05,
+      "tol": 0.001,
+      "passed": true,
+      "wall_clock_s": 0.12635013599992817,
+      "source": "HeatConductionOracle vs T=sin(pi x)sin(pi y), s=2 pi^2 T on [0,1]^2, T=0 on boundary (method of manufactured solutions, Roache 1998)",
+      "notes": "Observed convergence order 2.001 (expected 2).",
+      "extra": {
+        "observed_order": 2.0008738962833426,
+        "levels": [
+          17,
+          33,
+          65,
+          129
+        ]
+      }
+    },
+    {
+      "case": "modal (membrane)",
+      "reference_type": "analytic (separation of variables)",
+      "qoi": "fundamental eigenvalue lambda_11, 65x65 grid",
+      "morphos": 19.73524553445563,
+      "reference": 19.739208802178716,
+      "rel_error": 0.00020078148839732248,
+      "tol": 0.01,
+      "passed": true,
+      "wall_clock_s": 0.03864792100011982,
+      "source": "ModalOracle (K phi = lambda M phi, uniform mass) vs lambda_11 = pi^2(1/Lx^2 + 1/Ly^2) for a clamped rectangular membrane",
+      "notes": "Observed convergence order 1.999 (expected 2).",
+      "extra": {
+        "observed_order": 1.9991309732644273,
+        "levels": [
+          17,
+          33,
+          65
+        ]
+      }
+    },
+    {
+      "case": "elasticity (uniaxial bar)",
+      "reference_type": "analytic (Hooke's law)",
+      "qoi": "tip axial displacement",
+      "morphos": 19.999999999999726,
+      "reference": 20.0,
+      "rel_error": 1.3677947663381929e-14,
+      "tol": 1e-09,
+      "passed": true,
+      "wall_clock_s": 0.002569813999798498,
+      "source": "ElasticityOracle vs delta = P L /(A E) (prismatic-bar extension)",
+      "notes": "Linear displacement field reproduced exactly by the bilinear quad element.",
+      "extra": {}
+    },
+    {
+      "case": "elasticity (cantilever)",
+      "reference_type": "analytic (Euler-Bernoulli)",
+      "qoi": "tip deflection, 16x320 elements",
+      "morphos": -31971.656004884662,
+      "reference": -32000.0,
+      "rel_error": 0.0008857498473543046,
+      "tol": 0.02,
+      "passed": true,
+      "wall_clock_s": 0.1135348329999033,
+      "source": "ElasticityOracle vs delta = P L^3/(3 E I), I = t H^3/12 (Euler-Bernoulli beam)",
+      "notes": "Slender beam L/H=20; residual gap to EB is transverse shear (Timoshenko reference -32062.40, rel. error 2.83e-03). Richardson order 1.942.",
+      "extra": {
+        "euler_bernoulli": -32000.0,
+        "timoshenko": -32062.4,
+        "richardson_limit": -32036.62311069758,
+        "richardson_order": 1.9422188052660205
+      }
+    },
+    {
+      "case": "elasticity (vs scikit-fem)",
+      "reference_type": "independent FEM (scikit-fem 12.0.2)",
+      "qoi": "compliance, 8x160 elements",
+      "morphos": 31786.93257062713,
+      "reference": 31786.932495886405,
+      "rel_error": 2.3513034742311085e-09,
+      "tol": 1e-06,
+      "passed": true,
+      "wall_clock_s": 0.03799439900012658,
+      "source": "ElasticityOracle compliance vs an independent scikit-fem plane-stress ElementVector(ElementQuad1) assembly of the same cantilever",
+      "notes": "Two independent FE codes on the same problem agree to solver tolerance.",
+      "extra": {}
+    },
+    {
+      "case": "darcy (porous column)",
+      "reference_type": "analytic (Darcy's law)",
+      "qoi": "inlet-to-outlet pressure drop",
+      "morphos": 5.000000000000085,
+      "reference": 5.0,
+      "rel_error": 1.7053025658242404e-14,
+      "tol": 1e-09,
+      "passed": true,
+      "wall_clock_s": 0.0014005269995323033,
+      "source": "DarcyFlowOracle vs dp = Q L /(K A) (uniform 1D porous column, Darcy 1856)",
+      "notes": "Linear pressure field reproduced exactly by the Q4 diffusion element.",
+      "extra": {}
+    },
+    {
+      "case": "stokes (Poiseuille)",
+      "reference_type": "analytic (Poiseuille flow)",
+      "qoi": "rel. L2 x-velocity error over the channel",
+      "morphos": 8.060127364746357e-15,
+      "reference": 0.0,
+      "rel_error": 8.060127364746357e-15,
+      "tol": 1e-06,
+      "passed": true,
+      "wall_clock_s": 0.03762651699980779,
+      "source": "StokesFlowOracle vs u(y) = u_max 4 y(H-y)/H^2 (fully-developed plane Poiseuille, Batchelor \u00a74.2); exact in the biquadratic Taylor-Hood space",
+      "notes": "The parabolic solution lies in the FE velocity space, so error is solver-limited.",
+      "extra": {}
+    },
+    {
+      "case": "topology MBB (compliance)",
+      "reference_type": "literature (88-line SIMP)",
+      "qoi": "converged compliance, 60x20, vf=0.5, p=3, rmin=1.5",
+      "morphos": 207.29815943888718,
+      "reference": 205.0,
+      "rel_error": 0.01121053384823016,
+      "tol": 0.1,
+      "passed": true,
+      "wall_clock_s": 3.8776810279996425,
+      "source": "Andreassen et al. (2011), '88-line' SIMP MBB beam top88(60,20,0.5,3,1.5), converged compliance ~205 (E0=1, nu=0.3, unit load, density filter)",
+      "notes": "Morphos uses gradient ascent with a constant-shift volume projection rather than OC/MMA; ~10% tolerance reflects the optimizer-scheme difference, not solver error.",
+      "extra": {
+        "volume_fraction": 0.4999999999999999
+      }
+    },
+    {
+      "case": "topology MBB (volume)",
+      "reference_type": "constraint target",
+      "qoi": "achieved volume fraction",
+      "morphos": 0.4999999999999999,
+      "reference": 0.5,
+      "rel_error": 2.220446049250313e-16,
+      "tol": 0.001,
+      "passed": true,
+      "wall_clock_s": 0.0,
+      "source": "VolumeConstraint target volume fraction 0.5",
+      "notes": "Volume projection holds the constraint to projection tolerance every iteration.",
+      "extra": {}
+    },
+    {
+      "case": "topology Michell (compliance ratio)",
+      "reference_type": "theoretical bound (full-solid stiffness)",
+      "qoi": "C_opt / C_solid at vf=0.4",
+      "morphos": 2.204740630058917,
+      "reference": 1.0,
+      "rel_error": 1.2047406300589172,
+      "tol": Infinity,
+      "passed": true,
+      "wall_clock_s": 6.802086933999817,
+      "source": "Michell (1904) cantilever load case; reported against the rigorous lower bound C_solid (compliance of the rho=1 domain) since a finite-volume SIMP design cannot reach the singular Michell truss optimum",
+      "notes": "C_opt=87.28 at vf=0.4 vs C_solid=39.59 (the unattainable fully-solid floor). The 2.2x ratio is the expected stiffness cost of using 40% of the material; the design correctly never beats the solid bound.",
+      "extra": {
+        "C_opt": 87.28165864024635,
+        "C_solid": 39.5881753392071,
+        "volume_fraction": 0.4
+      }
+    },
+    {
+      "case": "topology Michell (volume)",
+      "reference_type": "constraint target",
+      "qoi": "achieved volume fraction",
+      "morphos": 0.4,
+      "reference": 0.4,
+      "rel_error": 0.0,
+      "tol": 0.001,
+      "passed": true,
+      "wall_clock_s": 0.0,
+      "source": "VolumeConstraint target volume fraction 0.4",
+      "notes": "",
+      "extra": {}
+    },
+    {
+      "case": "heat-3d (MMS)",
+      "reference_type": "analytic (manufactured solution)",
+      "qoi": "rel. L2 temperature error, 33x33x33 grid",
+      "morphos": 0.0008035776793710654,
+      "reference": 0.0,
+      "rel_error": 0.0008035776793710654,
+      "tol": 0.001,
+      "passed": true,
+      "wall_clock_s": 7.667849070000557,
+      "source": "HeatConductionOracle (3D) vs T=sin(pi x)sin(pi y)sin(pi z), s=3 pi^2 T on [0,1]^3, T=0 on boundary (manufactured solution, Roache 1998)",
+      "notes": "Observed convergence order 2.005 (expected 2).",
+      "extra": {
+        "observed_order": 2.0052269911715506,
+        "levels": [
+          9,
+          17,
+          33
+        ]
+      }
+    },
+    {
+      "case": "elasticity 3D (uniaxial bar)",
+      "reference_type": "analytic (Hooke's law)",
+      "qoi": "tip axial displacement (Hex8)",
+      "morphos": 1.2499999999999785,
+      "reference": 1.25,
+      "rel_error": 1.7230661342182428e-14,
+      "tol": 1e-09,
+      "passed": true,
+      "wall_clock_s": 0.016193698999813932,
+      "source": "ElasticityOracle (Hex8) vs delta = P L /(A E), A = Hy*Wz (prismatic bar)",
+      "notes": "Linear displacement field reproduced exactly by the trilinear hex element.",
+      "extra": {}
+    },
+    {
+      "case": "elasticity 3D (vs scikit-fem)",
+      "reference_type": "independent FEM (scikit-fem 12.0.2)",
+      "qoi": "compliance, 4x4x24 Hex8 elements",
+      "morphos": 209.788319810536,
+      "reference": 209.78831981149855,
+      "rel_error": 4.588234626905737e-12,
+      "tol": 1e-06,
+      "passed": true,
+      "wall_clock_s": 0.40836267700069584,
+      "source": "ElasticityOracle (Hex8) compliance vs an independent scikit-fem ElementVector(ElementHex1) assembly of the same 3D cantilever",
+      "notes": "Two independent 3D FE codes on the same problem agree to solver tolerance.",
+      "extra": {}
+    }
+  ],
+  "convergence_studies": [
+    {
+      "case": "heat-conduction",
+      "hs": [
+        0.0625,
+        0.03125,
+        0.015625,
+        0.0078125
+      ],
+      "errors": [
+        0.0032189644400789494,
+        0.0008035776793691299,
+        0.0002008218096991474,
+        5.020091590932162e-05
+      ],
+      "observed_order": 2.0008738962833426,
+      "expected_order": 2.0,
+      "qoi": "rel. L2 temperature error",
+      "notes": "Second-order (5-point Laplacian) convergence on a smooth manufactured solution.",
+      "plot_path": "convergence_heat.png"
+    },
+    {
+      "case": "modal-membrane",
+      "hs": [
+        0.0625,
+        0.03125,
+        0.015625
+      ],
+      "errors": [
+        0.0032086359550387274,
+        0.0008029324607653536,
+        0.00020078148839732248
+      ],
+      "observed_order": 1.9991309732644273,
+      "expected_order": 2.0,
+      "qoi": "rel. fundamental-eigenvalue error",
+      "notes": "Discrete Laplacian eigenvalue -> continuum at second order.",
+      "plot_path": "convergence_modal.png"
+    },
+    {
+      "case": "elasticity-cantilever",
+      "hs": [
+        0.5,
+        0.25,
+        0.125,
+        0.0625
+      ],
+      "errors": [
+        0.10880292401023112,
+        0.02994877237541041,
+        0.0077931476851741555,
+        0.002027901180109815
+      ],
+      "observed_order": 1.9422188052660205,
+      "expected_order": 2.0,
+      "qoi": "rel. tip-deflection error vs Richardson-extrapolated limit",
+      "notes": "Richardson-extrapolated continuum tip deflection -32036.62 sits between Euler-Bernoulli (-32000.00) and Timoshenko (-32062.40), as expected for a 2D plane-stress beam. Q4 displacement QoI converges at ~2nd order.",
+      "plot_path": "convergence_elasticity.png"
+    },
+    {
+      "case": "heat-3d",
+      "hs": [
+        0.125,
+        0.0625,
+        0.03125
+      ],
+      "errors": [
+        0.012950746721879023,
+        0.003218964440079798,
+        0.0008035776793710654
+      ],
+      "observed_order": 2.0052269911715506,
+      "expected_order": 2.0,
+      "qoi": "rel. L2 temperature error (3D)",
+      "notes": "Second-order (7-point Laplacian) convergence on a smooth 3D manufactured solution.",
+      "plot_path": "convergence_heat_3d.png"
+    }
+  ]
+}

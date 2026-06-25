@@ -22,5 +22,5 @@ def test_readme_quickstart_is_executable(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     namespace = {"__name__": "__readme__"}
     exec(compile(snippet, "<readme-quickstart>", "exec"), namespace)
-    # The snippet writes its outputs under morphos_out/ in the working dir.
-    assert (tmp_path / "morphos_out" / "design.stl").exists()
+    # The agent quickstart writes its STL under out/ named after the generator.
+    assert (tmp_path / "out" / "gyroid_heat_exchanger.stl").exists()

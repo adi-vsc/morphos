@@ -1,5 +1,6 @@
 """Morphos: a physics-driven engine that generates manufacturable geometry by
-optimizing it toward the physical limit, and reports the margin to that limit.
+optimizing it against a physics solver, and reports the gap to a user-supplied
+reference performance bound.
 
 The core is physics-agnostic. Every layer speaks one data type, the Field. A new
 product is a new backend behind the same interfaces, not a rewrite.
@@ -58,7 +59,7 @@ from morphos.manufacturing.export import (
 from morphos.feedback import FeedbackRecord, OracleCalibrator
 from morphos.library import ComponentLibrary, ComponentSpec, default_library
 
-__version__ = "0.0.1"
+__version__ = "0.1.0"
 
 __all__ = [
     "Field",

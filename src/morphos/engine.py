@@ -1,8 +1,8 @@
 """Engine: orchestration from DesignSpec to DesignResult.
 
 The engine runs the optimizer against the oracle and objective under the
-manufacturability constraint, then assembles the result, including the margin to
-the physical limit when the objective exposes one.
+manufacturability constraint, then assembles the result, including the gap to
+the reference bound when the objective exposes one.
 """
 
 from __future__ import annotations
@@ -13,8 +13,8 @@ from morphos.spec import CoupledSpec, DesignSpec, DesignResult, ParametricSpec
 
 
 def _result_from_opt(opt, objective, constraint) -> DesignResult:
-    """Assemble a DesignResult from an optimizer result, including the margin to
-    the physical limit when the objective exposes one. Shared by Engine and
+    """Assemble a DesignResult from an optimizer result, including the gap to
+    the reference bound when the objective exposes one. Shared by Engine and
     CoupledEngine."""
     bound = objective.bound()
     margin = None if bound is None else bound.margin(opt.fom)
