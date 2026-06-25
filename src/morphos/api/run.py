@@ -11,7 +11,6 @@ Engine/Optimizer/Field machinery.
 
 from __future__ import annotations
 
-import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -58,31 +57,6 @@ class MorphosResult:
     bundle: Any
     output_dir: Path
     elapsed_seconds: float
-
-
-def _safe_write(text: str) -> None:
-    """Write to stdout without ever raising on a console whose encoding cannot
-    represent the progress glyphs (Windows code pages choke on the Greek
-    delta/beta and block characters); unrepresentable characters degrade to a
-    placeholder instead of crashing the run."""
-    enc = sys.stdout.encoding or "utf-8"
-    sys.stdout.write(text.encode(enc, errors="replace").decode(enc))
-    sys.stdout.flush()
-
-
-def _simple_progress(total: int):
-    """A minimal ``\\r``-overwriting per-iteration progress line. Replaced by the
-    richer :class:`morphos.cli.progress.ProgressBar` when one is wired in, but
-    kept as the zero-dependency default ``verbose`` display."""
-    width = len(str(total))
-
-    def on_iteration(iteration, fom, delta, p, beta):
-        _safe_write(
-            f"\r  iter {iteration:0{width}d}/{total}  fom={fom:.4f}  "
-            f"Δ={delta:.4f}  p={p:.2f}  β={beta:.2f}"
-        )
-
-    return on_iteration
 
 
 def _format_orientation(orientation) -> str:
@@ -174,7 +148,12 @@ def run(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    on_iteration = _simple_progress(spec.optimizer.max_iter) if verbose else None
+    progress = None
+    if verbose:
+        from morphos.cli.progress import ProgressBar
+
+        progress = ProgressBar(spec.optimizer.max_iter)
+    on_iteration = progress.update if progress is not None else None
 
     engine = Engine()
     t0 = time.perf_counter()
@@ -185,8 +164,8 @@ def run(
         on_iteration=on_iteration,
     )
     elapsed = time.perf_counter() - t0
-    if verbose:
-        _safe_write("\n")
+    if progress is not None:
+        progress.close(design_result.converged)
 
     report = build_report(design_result, oracle)
 
