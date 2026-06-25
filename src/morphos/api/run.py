@@ -57,6 +57,10 @@ class MorphosResult:
     bundle: Any
     output_dir: Path
     elapsed_seconds: float
+    # Optional provenance the HTML report uses for its header and the p/beta
+    # continuation curves; absent (None) does not affect the core output suite.
+    intent_name: Any = None
+    optimizer: Any = None
 
 
 def _format_orientation(orientation) -> str:
@@ -131,6 +135,7 @@ def run(
     -------
     MorphosResult
     """
+    intent_name = type(spec).__name__ if isinstance(spec, DesignIntent) else None
     if isinstance(spec, DesignIntent):
         spec = spec.build()
 
@@ -187,6 +192,8 @@ def run(
         bundle=bundle,
         output_dir=output_dir,
         elapsed_seconds=elapsed,
+        intent_name=intent_name,
+        optimizer=getattr(spec, "optimizer", None),
     )
 
     # Interactive HTML report (Step 4). Imported lazily so the core run path has
