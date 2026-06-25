@@ -116,3 +116,42 @@ def test_report_carries_margin_when_bound_is_known():
     report = build_report(res, spec.oracle)
     assert report.margin == pytest.approx(res.margin)
     assert report.attained_fraction == res.attained_fraction
+
+
+def test_report_json_round_trip():
+    intent = CantileverIntent(span=10, height=5, load=-1.0, volume_fraction=0.4, max_iter=10)
+    spec = intent.build()
+    res = Engine().run(spec)
+    report = build_report(res, spec.oracle)
+
+    s = report.to_json()
+    report2 = PerformanceReport.from_json(s)
+
+    assert report2.quantities == report.quantities
+    assert report2.mass_fraction == pytest.approx(report.mass_fraction)
+    assert report2.figure_of_merit == pytest.approx(report.figure_of_merit)
+    assert report2.margin == pytest.approx(report.margin)
+    assert report2.attained_fraction == pytest.approx(report.attained_fraction)
+    assert report2.manufacturability == report.manufacturability
+    assert report2.calibration_summary == report.calibration_summary
+
+
+def test_report_json_round_trip_with_calibration_summary():
+    from morphos.feedback import CalibrationResult
+
+    cal = CalibrationResult(
+        coeffs=[1.0, 0.02],
+        residuals=[0.1, -0.05, 0.02],
+        r_squared=0.93,
+    )
+    report = PerformanceReport(
+        quantities={"peak_temperature_K": 900.0},
+        mass_fraction=0.4,
+        figure_of_merit=-900.0,
+        calibration_summary=cal,
+    )
+    report2 = PerformanceReport.from_json(report.to_json())
+    assert report2.calibration_summary is not None
+    assert report2.calibration_summary.coeffs == cal.coeffs
+    assert report2.calibration_summary.residuals == cal.residuals
+    assert report2.calibration_summary.r_squared == pytest.approx(cal.r_squared)

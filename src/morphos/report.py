@@ -11,11 +11,13 @@ machinery.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field as _dc_field
+import json
+from dataclasses import asdict, dataclass, field as _dc_field
 from typing import Optional
 
 import numpy as np
 
+from morphos.feedback import CalibrationResult
 from morphos.physics.darcy import DarcyFlowOracle
 from morphos.physics.elasticity import ElasticityOracle
 from morphos.physics.heat import HeatConductionOracle
@@ -33,6 +35,47 @@ class PerformanceReport:
     margin: Optional[float] = None
     attained_fraction: Optional[float] = None
     manufacturability: dict = _dc_field(default_factory=dict)
+    calibration_summary: Optional[CalibrationResult] = None
+
+    def to_json(self) -> str:
+        """Serialise the full report, including ``calibration_summary`` (a
+        nested :class:`~morphos.feedback.CalibrationResult` dataclass), to a
+        JSON string an engineer or downstream copilot can persist as
+        ``report.json`` and later reconstruct exactly via :meth:`from_json`.
+        """
+        d = {
+            "quantities": self.quantities,
+            "mass_fraction": self.mass_fraction,
+            "figure_of_merit": self.figure_of_merit,
+            "margin": self.margin,
+            "attained_fraction": self.attained_fraction,
+            "manufacturability": self.manufacturability,
+            "calibration_summary": (
+                asdict(self.calibration_summary) if self.calibration_summary is not None else None
+            ),
+        }
+        return json.dumps(d)
+
+    @classmethod
+    def from_json(cls, s: str) -> "PerformanceReport":
+        d = json.loads(s)
+        cal_d = d.get("calibration_summary")
+        calibration_summary = (
+            CalibrationResult(
+                coeffs=cal_d["coeffs"], residuals=cal_d["residuals"], r_squared=cal_d["r_squared"],
+            )
+            if cal_d is not None
+            else None
+        )
+        return cls(
+            quantities=d["quantities"],
+            mass_fraction=d["mass_fraction"],
+            figure_of_merit=d["figure_of_merit"],
+            margin=d.get("margin"),
+            attained_fraction=d.get("attained_fraction"),
+            manufacturability=d.get("manufacturability", {}),
+            calibration_summary=calibration_summary,
+        )
 
 
 def _quantities_for(oracle: PhysicsOracle, aux: dict) -> dict:

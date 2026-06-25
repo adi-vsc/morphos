@@ -3,7 +3,12 @@
 import numpy as np
 import pytest
 
-from morphos.feedback import FeedbackRecord, OracleCalibrator
+from morphos.feedback import (
+    CalibrationResult,
+    FeedbackRecord,
+    OracleCalibrator,
+    PolynomialGainModel,
+)
 
 
 def _record(pred, meas, h="abc123"):
@@ -63,3 +68,76 @@ def test_calibrator_with_custom_model_recovers_offset():
 def test_calibrator_raises_on_empty_records():
     with pytest.raises(ValueError):
         OracleCalibrator([])
+
+
+def test_feedback_record_extended_fields_default_and_round_trip():
+    # New structured fields default to empty so existing 4-arg construction
+    # (design_hash/oracle_type/predicted/measured) keeps working unchanged.
+    rec = _record({"q": 1.0}, {"q": 1.1})
+    assert rec.oracle_name == ""
+    assert rec.operating_point == {}
+    assert rec.quantities == {}
+
+    rec2 = FeedbackRecord(
+        design_hash="abc123",
+        oracle_type="ConjugateHeatOracle",
+        predicted={"peak_temperature_K": 900.0},
+        measured={"peak_temperature_K": 950.0},
+        oracle_name="cht_3d",
+        operating_point={"temperature_K": 900.0, "pressure_Pa": 1e6},
+        quantities={"peak_temperature_K": (900.0, 950.0)},
+    )
+    s = rec2.to_json()
+    rec3 = FeedbackRecord.from_json(s)
+    assert rec3.oracle_name == "cht_3d"
+    assert rec3.operating_point == {"temperature_K": 900.0, "pressure_Pa": 1e6}
+    assert rec3.quantities == {"peak_temperature_K": (900.0, 950.0)}
+
+
+def _nonlinear_records(n=10, seed=0):
+    """Synthetic records where measured = predicted + 0.02 * predicted**2,
+    a genuinely nonlinear discrepancy that a degree-1 (linear) gain model
+    cannot fit as well as a higher-degree polynomial."""
+    rng = np.random.default_rng(seed)
+    records = []
+    for _ in range(n):
+        x = float(rng.uniform(1.0, 10.0))
+        measured = x + 0.02 * x ** 2
+        records.append(
+            FeedbackRecord(
+                design_hash=f"d{_}",
+                oracle_type="ConjugateHeatOracle",
+                predicted={"T": x},
+                measured={"T": measured},
+                oracle_name="cht_3d",
+                operating_point={"T": x},
+                quantities={"T": (x, measured)},
+            )
+        )
+    return records
+
+
+def test_polynomial_model_outperforms_linear_on_nonlinear_data():
+    records = _nonlinear_records()
+    linear = PolynomialGainModel(degree=1)
+    cubic = PolynomialGainModel(degree=3)
+
+    cal_linear = OracleCalibrator(records, model=linear, oracle_name="cht_3d")
+    cal_cubic = OracleCalibrator(records, model=cubic, oracle_name="cht_3d")
+
+    result_linear = cal_linear.calibrate()
+    result_cubic = cal_cubic.calibrate()
+
+    rms_linear = float(np.sqrt(np.mean(np.asarray(result_linear.residuals) ** 2)))
+    rms_cubic = float(np.sqrt(np.mean(np.asarray(result_cubic.residuals) ** 2)))
+    assert rms_cubic < rms_linear
+
+
+def test_calibration_result_has_positive_r_squared_on_synthetic_data():
+    records = _nonlinear_records()
+    model = PolynomialGainModel(degree=2)
+    cal = OracleCalibrator(records, model=model, oracle_name="cht_3d")
+    result = cal.calibrate()
+    assert isinstance(result, CalibrationResult)
+    assert result.r_squared > 0.0
+    assert result.r_squared <= 1.0 + 1e-9
