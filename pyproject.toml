@@ -28,6 +28,9 @@ diff = ["jax>=0.4"]
 cfd = ["scikit-fem>=9.0"]
 dev = ["pytest>=7.0", "pyamg>=5.0", "scikit-image>=0.20", "jax>=0.4", "scikit-fem>=9.0"]
 
+[project.scripts]
+morphos = "morphos.cli.main:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
