@@ -215,6 +215,99 @@ def _cmd_validate(args) -> int:
     return 0 if watertight else 2
 
 
+# --- batch --------------------------------------------------------------------
+
+
+def _run_one_spec(task):
+    """Run a single spec file to its own output directory. Defined at module
+    level so it is picklable for ``ProcessPoolExecutor`` (Windows spawn). On
+    failure it writes the traceback to ``<out_dir>/error.txt`` rather than to
+    stdout, and returns a result record either way."""
+    import time
+    import traceback
+
+    spec_path, out_dir = task
+    stem = Path(spec_path).stem
+    t0 = time.perf_counter()
+    try:
+        spec = morphos.from_json(spec_path)
+        result = morphos.run(spec, output_dir=out_dir, verbose=False)
+        return {
+            "stem": stem,
+            "ok": True,
+            "elapsed": result.elapsed_seconds,
+            "fom": result.report.figure_of_merit,
+        }
+    except Exception as exc:  # noqa: BLE001 - record every failure, never crash the batch
+        out = Path(out_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+        return {
+            "stem": stem,
+            "ok": False,
+            "elapsed": time.perf_counter() - t0,
+            "error": str(exc).splitlines()[0] if str(exc) else type(exc).__name__,
+        }
+
+
+def _print_batch_row(record, quiet: bool) -> None:
+    if quiet:
+        return
+    name = f"{record['stem']}.json"
+    if record["ok"]:
+        _safe_print(
+            f"  {name:<24} ✓  {record['elapsed']:5.1f} s   fom {record['fom']:.3f}"
+        )
+    else:
+        _safe_print(f"  {name:<24} ✗  ERROR: {record['error']}")
+
+
+def _cmd_batch(args) -> int:
+    import os
+
+    specs_dir = Path(args.specs_dir)
+    if not specs_dir.is_dir():
+        _error(
+            "specs directory not found: expected a directory of spec JSON files, "
+            f"found nothing usable at {specs_dir}"
+        )
+        return 1
+    spec_files = sorted(specs_dir.glob("*.json"))
+    if not spec_files:
+        _error(
+            f"no spec files: expected one or more .json files in {specs_dir}, found none"
+        )
+        return 1
+
+    batch_out = Path(args.output_dir)
+    max_jobs = os.cpu_count() or 1
+    jobs = max(1, min(int(args.jobs), max_jobs))
+    tasks = [(str(f), str(batch_out / f.stem)) for f in spec_files]
+
+    records = []
+    if jobs == 1:
+        for task in tasks:
+            record = _run_one_spec(task)
+            records.append(record)
+            _print_batch_row(record, args.quiet)
+    else:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        with ProcessPoolExecutor(max_workers=jobs) as pool:
+            futures = [pool.submit(_run_one_spec, task) for task in tasks]
+            for future in as_completed(futures):
+                record = future.result()
+                records.append(record)
+                _print_batch_row(record, args.quiet)
+
+    failures = sum(1 for r in records if not r["ok"])
+    if not args.quiet:
+        ok = len(records) - failures
+        _safe_print(f"  {ok} succeeded, {failures} failed")
+    # Exit 3 signals partial success (at least one run failed); 0 means all ran.
+    return 3 if failures else 0
+
+
 # --- entry point --------------------------------------------------------------
 
 
@@ -246,6 +339,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p_validate.add_argument("--quiet", action="store_true")
     p_validate.add_argument("--debug", action="store_true")
     p_validate.set_defaults(func=_cmd_validate)
+
+    p_batch = sub.add_parser(
+        "batch", help="run every spec in a directory, optionally in parallel"
+    )
+    p_batch.add_argument("specs_dir", help="directory of spec JSON files")
+    p_batch.add_argument("--output-dir", default="./batch_out")
+    p_batch.add_argument(
+        "--jobs", type=int, default=1,
+        help="number of specs to run in parallel (1 = serial, capped at CPU count)",
+    )
+    p_batch.add_argument("--quiet", action="store_true")
+    p_batch.add_argument("--debug", action="store_true")
+    p_batch.set_defaults(func=_cmd_batch)
 
     return parser
 
