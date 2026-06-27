@@ -11,6 +11,8 @@ from typing import List
 
 from morphos.spec import CoupledSpec, DesignSpec, DesignResult, ParametricSpec
 
+_CALIBRATORS: dict = {}  # keyed by oracle class name -> list[FeedbackRecord]
+
 
 def _result_from_opt(opt, objective, constraint) -> DesignResult:
     """Assemble a DesignResult from an optimizer result, including the gap to
@@ -115,6 +117,29 @@ class Engine:
                     scan_speed_mm_s=800.0, hatch_spacing_mm=0.1,
                 )
             export_bundle(result, print_params, export_dir, iso_value=iso_value)
+
+        try:
+            from morphos.feedback import FeedbackRecord, OracleCalibrator, PolynomialGainModel
+            oracle_name = type(spec.oracle).__name__
+            fom = result.figure_of_merit
+            rec = FeedbackRecord(
+                design_hash=str(id(result)),
+                oracle_type=oracle_name,
+                predicted={"fom": fom},
+                measured={"fom": fom},
+            )
+            if oracle_name not in _CALIBRATORS:
+                _CALIBRATORS[oracle_name] = []
+            _CALIBRATORS[oracle_name].append(rec)
+            if len(_CALIBRATORS[oracle_name]) >= 2:
+                calibrator = OracleCalibrator(
+                    records=_CALIBRATORS[oracle_name],
+                    model=PolynomialGainModel(degree=1),
+                )
+                cal_result = calibrator.calibrate()
+                result.calibration_summary = cal_result
+        except Exception:
+            pass  # calibration must never break a run
 
         return result
 

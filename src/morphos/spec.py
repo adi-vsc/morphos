@@ -55,6 +55,7 @@ class DesignSpec:
     optimizer: Optimizer
     constraint: object = None
     name: str = ""
+    rebuild_amg_every: int = 10
 
     def to_dict(self) -> dict:
         """A JSON-safe structural description of this spec (Shape B).
@@ -150,6 +151,7 @@ class CoupledSpec:
     n_outer: int = 1
     coupling_mode: Literal["staggered", "monolithic"] = "staggered"
     name: str = ""
+    rebuild_amg_every: int = 10
     outer_tol: float = 1e-6
 
 
@@ -170,6 +172,7 @@ class DesignResult:
     mesh_path: Optional[Path] = None
     vdb_path: Optional[Path] = None
     manufacturing_bundle: Optional[Any] = None
+    calibration_summary: Optional[Any] = None
 
     @property
     def is_exported(self) -> bool:
