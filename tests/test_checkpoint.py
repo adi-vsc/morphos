@@ -182,7 +182,8 @@ def _quadratic_target_problem():
             return PhysicsResult(value=-float(np.sum(diff ** 2)))
 
     def build(params):
-        return Field(np.asarray(params, dtype=float), spacing=1.0)
+        # reshape to (1, n) so Field sees a 2-D array (required by Field.__init__)
+        return Field(np.asarray(params, dtype=float).reshape(1, -1), spacing=1.0)
 
     return build, _ParamOracle(), target
 

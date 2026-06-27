@@ -70,14 +70,14 @@ class _AMGCache:
     ``rebuild_every`` forces a periodic rebuild so that, during SIMP
     continuation, the hierarchy does not get arbitrarily stale as densities
     evolve from near-uniform gray to near-binary (9 decades of stiffness
-    contrast).  A value of 20 means the hierarchy is rebuilt at most once
-    every 20 forward solves, which is cheap relative to the CG convergence
+    contrast).  A value of 10 means the hierarchy is rebuilt at most once
+    every 10 forward solves, which is cheap relative to the CG convergence
     improvement it buys.
     """
 
     __slots__ = ("indptr", "indices", "shape", "ml", "preconditioner", "_call_count", "rebuild_every")
 
-    def __init__(self, rebuild_every: int = 20) -> None:
+    def __init__(self, rebuild_every: int = 10) -> None:
         self.indptr = None
         self.indices = None
         self.shape = None
@@ -121,6 +121,7 @@ def solve_linear(
     rtol: float = 1e-10,
     maxiter: Optional[int] = None,
     indefinite: bool = False,
+    rebuild_amg_every: int = 10,
 ) -> Tuple[np.ndarray, float, int]:
     """Solve ``A x = b`` by direct LU or preconditioned Krylov.
 
@@ -159,6 +160,9 @@ def solve_linear(
         preconditioner is built every call).
     rtol, maxiter:
         Convergence tolerance and iteration cap forwarded to CG/GMRES.
+    rebuild_amg_every:
+        How many forward solves between forced AMG hierarchy rebuilds (passed
+        to :class:`_AMGCache` and :class:`_ILUCache`). Default is 10.
 
     Returns
     -------
@@ -184,7 +188,7 @@ def solve_linear(
     if indefinite:
         # SA-AMG is not a valid preconditioner for an indefinite saddle-point
         # operator; use ILU + GMRES instead (see docstring).
-        M = _get_ilu_preconditioner(A, cache_holder)
+        M = _get_ilu_preconditioner(A, cache_holder, rebuild_amg_every)
         x, info = gmres(
             A, b, rtol=rtol, atol=0.0, maxiter=maxiter, M=M,
             callback=_count, callback_type="legacy",
@@ -192,12 +196,12 @@ def solve_linear(
         if info != 0:
             raise RuntimeError(f"GMRES (ILU) failed to converge (info={info})")
     elif symmetric:
-        M = _get_amg_preconditioner(A, cache_holder)
+        M = _get_amg_preconditioner(A, cache_holder, rebuild_amg_every)
         x, info = cg(A, b, rtol=rtol, atol=0.0, maxiter=maxiter, M=M, callback=_count)
         if info != 0:
             raise RuntimeError(f"CG failed to converge (info={info})")
     else:
-        M = _get_amg_preconditioner(A, cache_holder)
+        M = _get_amg_preconditioner(A, cache_holder, rebuild_amg_every)
         x, info = gmres(
             A, b, rtol=rtol, atol=0.0, maxiter=maxiter, M=M,
             callback=_count, callback_type="legacy",
@@ -209,20 +213,28 @@ def solve_linear(
     return x, residual_norm, iters
 
 
-def _get_amg_preconditioner(A: sparse.csr_matrix, cache_holder: Optional[list]):
+def _get_amg_preconditioner(
+    A: sparse.csr_matrix,
+    cache_holder: Optional[list],
+    rebuild_every: int = 10,
+):
     if cache_holder is not None:
         if not cache_holder:
-            cache_holder.append(_AMGCache())
+            cache_holder.append(_AMGCache(rebuild_every=rebuild_every))
         return cache_holder[0].get(A)
     import pyamg
 
     return pyamg.smoothed_aggregation_solver(A).aspreconditioner()
 
 
-def _get_ilu_preconditioner(A: sparse.csr_matrix, cache_holder: Optional[list]):
+def _get_ilu_preconditioner(
+    A: sparse.csr_matrix,
+    cache_holder: Optional[list],
+    rebuild_every: int = 10,
+):
     if cache_holder is not None:
         if not cache_holder:
-            cache_holder.append(_ILUCache())
+            cache_holder.append(_ILUCache(rebuild_every=rebuild_every))
         return cache_holder[0].get(A)
     return _build_ilu(A)
 
@@ -239,7 +251,7 @@ class _ILUCache:
 
     __slots__ = ("indptr", "indices", "shape", "preconditioner", "_call_count", "rebuild_every")
 
-    def __init__(self, rebuild_every: int = 20) -> None:
+    def __init__(self, rebuild_every: int = 10) -> None:
         self.indptr = None
         self.indices = None
         self.shape = None
