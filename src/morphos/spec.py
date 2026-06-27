@@ -150,6 +150,7 @@ class CoupledSpec:
     n_outer: int = 1
     coupling_mode: Literal["staggered", "monolithic"] = "staggered"
     name: str = ""
+    outer_tol: float = 1e-6
 
 
 @dataclass

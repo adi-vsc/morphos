@@ -74,12 +74,17 @@ class TopologyOptimizer(Optimizer):
         p_end: float = 1.0,
         p_ramp_fraction: float = 0.5,
         filter_radius: float = 0,
+        filter_type: str = "box",
+        filter_h: float = 1.0,
         beta_start: float = 1.0,
         beta_end: float = 1.0,
         patience: int = 1,
         checkpoint_dir: Optional[Path] = None,
         checkpoint_every: int = 10,
         resume_from: Optional[Path] = None,
+        line_search: bool = False,
+        max_backtracks: int = 20,
+        volume_fraction: Optional[float] = None,
     ) -> None:
         """Gradient-ascent SIMP topology optimizer.
 
@@ -106,10 +111,20 @@ class TopologyOptimizer(Optimizer):
             ``penalty``, or rely on the oracle's own fixed ``penalty`` and
             leave ``p_start == p_end`` unset, which never touches it).
         filter_radius:
-            Radius (in voxels) of a linear cone/box density filter applied to
-            the raw design before projection and before the oracle solve.
-            ``0`` (the default) disables filtering entirely, preserving the
-            pre-filter behavior exactly.
+            Radius (in voxels for ``"box"``, physical length for ``"pde"``)
+            of the density filter applied to the raw design before
+            projection and before the oracle solve. ``0`` (the default)
+            disables filtering entirely, preserving the pre-filter behavior
+            exactly.
+        filter_type:
+            ``"box"`` (default) uses the directionally-biased
+            ``scipy.ndimage.uniform_filter`` cone/box filter, preserving
+            existing behavior exactly. ``"pde"`` uses the isotropic Helmholtz
+            PDE density filter (Lazarov & Sigmund 2016, see
+            ``morphos.optimize.pde_filter.PDEFilter``) instead.
+        filter_h:
+            Physical grid spacing used to assemble the PDE filter's Laplacian
+            when ``filter_type == "pde"``. Ignored for ``"box"``.
         beta_start, beta_end:
             Smooth Heaviside projection sharpness, applied after filtering;
             anneals linearly from ``beta_start`` to ``beta_end`` over the same
@@ -139,6 +154,18 @@ class TopologyOptimizer(Optimizer):
             the restored absolute iteration, rather than restarting the ramp
             from ``p_start``/``beta_start``) instead of starting from the
             ``initial`` field passed to :meth:`run`.
+        line_search:
+            When True, each ascent step is backtracked (the step is halved up
+            to ``max_backtracks`` times) until the candidate design's figure of
+            merit does not decrease, guaranteeing a monotone non-decreasing FOM
+            history at the cost of extra solves per iteration. Default False
+            preserves the original fixed-step behavior exactly. A non-finite
+            (NaN / Inf) figure of merit or gradient is always rejected, by
+            backtracking when ``line_search`` is on and by raising a clear
+            ``RuntimeError`` when it is off, so a diverged solve can never be
+            returned silently as a result.
+        max_backtracks:
+            Maximum step halvings per iteration when ``line_search`` is on.
         """
         self.step_size = float(step_size)
         self.max_iter = int(max_iter)
@@ -149,12 +176,21 @@ class TopologyOptimizer(Optimizer):
         self.p_end = float(p_end)
         self.p_ramp_fraction = float(p_ramp_fraction)
         self.filter_radius = float(filter_radius)
+        self.filter_type = str(filter_type)
+        self.filter_h = float(filter_h)
+        self._pde_filter = None
+        self._pde_filter_shape = None
         self.beta_start = float(beta_start)
         self.beta_end = float(beta_end)
         self.patience = int(patience)
         self.checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir is not None else None
         self.checkpoint_every = int(checkpoint_every)
         self.resume_from = Path(resume_from) if resume_from is not None else None
+        self.line_search = bool(line_search)
+        self.max_backtracks = int(max_backtracks)
+        if volume_fraction is not None and not (0.0 < float(volume_fraction) <= 1.0):
+            raise ValueError("volume_fraction must be in (0, 1]")
+        self.volume_fraction = None if volume_fraction is None else float(volume_fraction)
 
     # --- SIMP p / beta continuation schedule -----------------------------
 
@@ -178,13 +214,25 @@ class TopologyOptimizer(Optimizer):
         radius = int(round(self.filter_radius))
         return 2 * radius + 1
 
+    def _get_pde_filter(self, shape):
+        if self._pde_filter is None or self._pde_filter_shape != shape:
+            from morphos.optimize.pde_filter import PDEFilter
+
+            self._pde_filter = PDEFilter(shape, self.filter_h, self.filter_radius)
+            self._pde_filter_shape = shape
+        return self._pde_filter
+
     def _apply_filter(self, values: np.ndarray) -> np.ndarray:
-        """Cone/box density filter (uniform_filter, zero padded) on the raw
-        design, the standard SIMP regularizer that removes isolated
-        single-voxel spikes and checkerboarding. ``filter_radius <= 0``
-        disables filtering and returns ``values`` unchanged."""
+        """Density filter applied to the raw design, the standard SIMP
+        regularizer that removes isolated single-voxel spikes and
+        checkerboarding. ``filter_radius <= 0`` disables filtering and
+        returns ``values`` unchanged. ``filter_type == "pde"`` uses the
+        isotropic Helmholtz PDE filter instead of the directionally-biased
+        box filter (the default ``"box"``)."""
         if self.filter_radius <= 0:
             return values
+        if self.filter_type == "pde":
+            return self._get_pde_filter(values.shape).apply(values)
         return ndimage.uniform_filter(
             values, size=self._filter_size(), mode="constant", cval=0.0
         )
@@ -192,13 +240,17 @@ class TopologyOptimizer(Optimizer):
     def _filter_vjp(self, grad: np.ndarray) -> np.ndarray:
         """Vector-Jacobian product of :meth:`_apply_filter`.
 
-        The box filter is a linear, symmetric-kernel, zero-padded operator,
-        so it is self-adjoint: its own transpose is the same filter applied
-        to the incoming gradient (identical to the reasoning used by
-        ``MinFeatureSize`` in ``morphos.manufacturing.constraints``).
+        Both the box filter (a linear, symmetric-kernel, zero-padded
+        operator) and the PDE filter (a symmetric positive-definite operator
+        solve) are self-adjoint, so in either case the VJP is the same
+        filtering operation applied to the incoming gradient (identical to
+        the reasoning used by ``MinFeatureSize`` in
+        ``morphos.manufacturing.constraints``).
         """
         if self.filter_radius <= 0:
             return grad
+        if self.filter_type == "pde":
+            return self._get_pde_filter(grad.shape).vjp(grad)
         return ndimage.uniform_filter(
             grad, size=self._filter_size(), mode="constant", cval=0.0
         )
@@ -263,6 +315,16 @@ class TopologyOptimizer(Optimizer):
     def _fd_gradient(
         self, x: Field, oracle, objective, constraint, beta: float = 1.0
     ) -> np.ndarray:
+        n = x.values.size
+        if n > 1000:
+            import warnings
+            warnings.warn(
+                f"Finite-difference gradient on {n} elements requires {n} forward "
+                f"solves per iteration (O(N²) total). Implement an adjoint "
+                f"(provides_gradient=True on the oracle) to scale beyond small grids.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
         base = self._fom(x, oracle, objective, constraint, beta)
         grad = np.zeros_like(x.values)
         it = np.nditer(x.values, flags=["multi_index"])
@@ -273,6 +335,58 @@ class TopologyOptimizer(Optimizer):
             grad[idx] = (self._fom(xp, oracle, objective, constraint, beta) - base) / self.fd_eps
             it.iternext()
         return grad
+
+    def _clip_bounds(self, values: np.ndarray) -> np.ndarray:
+        if self.bounds is not None:
+            return np.clip(values, self.bounds[0], self.bounds[1])
+        return values
+
+    def _enforce_volume(self, x: Field) -> None:
+        """Project x onto {rho : mean(rho) = volume_fraction, lo <= rho <= hi}.
+
+        Bisects a uniform shift c so that mean(clip(x + c, lo, hi)) == V*.
+        This is the projected-gradient step for the equality volume constraint,
+        identical in structure to the OC bisection but additive rather than
+        multiplicative, making it applicable to any gradient-ascent step.
+        """
+        if self.volume_fraction is None:
+            return
+        lo, hi = self.bounds if self.bounds is not None else (0.0, 1.0)
+        target = self.volume_fraction
+        vals = x.values
+        c_lo, c_hi = float(lo - vals.max()), float(hi - vals.min())
+        for _ in range(60):
+            c = 0.5 * (c_lo + c_hi)
+            if np.mean(np.clip(vals + c, lo, hi)) > target:
+                c_hi = c
+            else:
+                c_lo = c
+        x.values = np.clip(vals + 0.5 * (c_lo + c_hi), lo, hi)
+
+    def _take_step(
+        self, x: Field, g: np.ndarray, base_fom: float, oracle, objective, constraint, beta: float
+    ) -> None:
+        """Advance the raw design ``x`` along the gradient ``g`` in place.
+
+        Without ``line_search`` this is the original fixed-step ascent. With it,
+        the step is halved (up to ``max_backtracks`` times) until the candidate
+        design's FOM is finite and does not fall below ``base_fom``; if no such
+        step is found the design is left unchanged, so the run stalls (and the
+        early-stop test fires) rather than stepping downhill into garbage.
+        """
+        if not self.line_search:
+            x.values = self._clip_bounds(x.values + self.step_size * g)
+            return
+
+        step = self.step_size
+        for _ in range(self.max_backtracks):
+            candidate = self._clip_bounds(x.values + step * g)
+            cand_fom = self._fom(x.like(candidate), oracle, objective, constraint, beta)
+            if np.isfinite(cand_fom) and cand_fom >= base_fom - 1e-12:
+                x.values = candidate
+                return
+            step *= 0.5
+        # No improving step found: leave the design where it is.
 
     def run(
         self, initial: Field, oracle, objective, constraint=None, on_iteration=None
@@ -303,6 +417,11 @@ class TopologyOptimizer(Optimizer):
 
             design, filtered = self._design_chain(x, beta, constraint)
             ov = _evaluate(design, oracle, objective)
+            if not np.isfinite(ov.fom):
+                raise RuntimeError(
+                    f"non-finite figure of merit ({ov.fom}) at iteration "
+                    f"{iterations}; the physics solve diverged"
+                )
             history.append(ov.fom)
 
             if on_iteration is not None:
@@ -331,9 +450,14 @@ class TopologyOptimizer(Optimizer):
                 used_fd = True
                 g = self._fd_gradient(x, oracle, objective, constraint, beta)
 
-            x.values = x.values + self.step_size * g
-            if self.bounds is not None:
-                np.clip(x.values, self.bounds[0], self.bounds[1], out=x.values)
+            if not np.all(np.isfinite(g)):
+                raise RuntimeError(
+                    f"non-finite gradient at iteration {iterations}; the "
+                    f"physics solve diverged"
+                )
+
+            self._take_step(x, g, ov.fom, oracle, objective, constraint, beta)
+            self._enforce_volume(x)
 
             if (
                 self.checkpoint_dir is not None

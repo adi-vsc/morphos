@@ -133,6 +133,50 @@ def q4_plane_stress_stiffness(
     return K
 
 
+def q4_plane_stress_stiffness_aniso(
+    young_modulus: float, poisson_ratio: float, hx: float, hy: float
+) -> np.ndarray:
+    """Anisotropic-grid analogue of :func:`q4_plane_stress_stiffness`.
+
+    Same element, shape functions, and quadrature, but the element is a
+    rectangle of side ``hx * hy`` rather than a square of side ``h``: the
+    Jacobian becomes ``diag(hx/2, hy/2)`` instead of ``(h/2) * I``, so
+    ``det_J = hx*hy/4`` and ``inv_J = diag(2/hx, 2/hy)``. Reduces exactly to
+    :func:`q4_plane_stress_stiffness` when ``hx == hy == h``.
+    """
+    E, nu = float(young_modulus), float(poisson_ratio)
+    C = (E / (1.0 - nu**2)) * np.array(
+        [
+            [1.0, nu, 0.0],
+            [nu, 1.0, 0.0],
+            [0.0, 0.0, (1.0 - nu) / 2.0],
+        ]
+    )
+    gp = 1.0 / np.sqrt(3.0)
+    gauss_points = [(-gp, -gp), (gp, -gp), (gp, gp), (-gp, gp)]
+    node_xi = np.array([-1.0, 1.0, 1.0, -1.0])
+    node_eta = np.array([-1.0, -1.0, 1.0, 1.0])
+    hx, hy = float(hx), float(hy)
+    det_j = (hx / 2.0) * (hy / 2.0)
+    inv_jx = 2.0 / hx
+    inv_jy = 2.0 / hy
+
+    K = np.zeros((8, 8))
+    for xi, eta in gauss_points:
+        dN_dxi = 0.25 * node_xi * (1.0 + node_eta * eta)
+        dN_deta = 0.25 * node_eta * (1.0 + node_xi * xi)
+        dN_dx = inv_jx * dN_dxi
+        dN_dy = inv_jy * dN_deta
+        B = np.zeros((3, 8))
+        for i in range(4):
+            B[0, 2 * i] = dN_dx[i]
+            B[1, 2 * i + 1] = dN_dy[i]
+            B[2, 2 * i] = dN_dy[i]
+            B[2, 2 * i + 1] = dN_dx[i]
+        K += (B.T @ C @ B) * det_j
+    return K
+
+
 def hex8_stiffness(young_modulus: float, poisson_ratio: float, h: float) -> np.ndarray:
     """Stiffness matrix of one trilinear hexahedral (Hex8) solid element.
 
@@ -197,6 +241,63 @@ def hex8_stiffness(young_modulus: float, poisson_ratio: float, h: float) -> np.n
             B[5, 3 * i] = dN_dz[i]
             B[5, 3 * i + 2] = dN_dx[i]
         # Gauss weights are 1 for the 2-point rule on each axis.
+        K += (B.T @ C @ B) * det_j
+    return K
+
+
+def hex8_stiffness_aniso(
+    young_modulus: float, poisson_ratio: float, hx: float, hy: float, hz: float
+) -> np.ndarray:
+    """Anisotropic-grid analogue of :func:`hex8_stiffness`.
+
+    Same element, shape functions, and quadrature, but the element is a
+    rectangular box of side ``hx * hy * hz`` rather than a cube of side ``h``:
+    the Jacobian becomes ``diag(hx/2, hy/2, hz/2)``, so
+    ``det_J = hx*hy*hz/8`` and ``inv_J = diag(2/hx, 2/hy, 2/hz)``. Reduces
+    exactly to :func:`hex8_stiffness` when ``hx == hy == hz == h``.
+    """
+    E, nu = float(young_modulus), float(poisson_ratio)
+    lam_c = E / ((1.0 + nu) * (1.0 - 2.0 * nu))
+    C = lam_c * np.array(
+        [
+            [1.0 - nu, nu, nu, 0.0, 0.0, 0.0],
+            [nu, 1.0 - nu, nu, 0.0, 0.0, 0.0],
+            [nu, nu, 1.0 - nu, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, (1.0 - 2.0 * nu) / 2.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, (1.0 - 2.0 * nu) / 2.0, 0.0],
+            [0.0, 0.0, 0.0, 0.0, 0.0, (1.0 - 2.0 * nu) / 2.0],
+        ]
+    )
+    gp = 1.0 / np.sqrt(3.0)
+    gauss_points = [(a, b, c) for a in (-gp, gp) for b in (-gp, gp) for c in (-gp, gp)]
+    node_xi = np.array([-1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0])
+    node_eta = np.array([-1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0])
+    node_zeta = np.array([-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0])
+    hx, hy, hz = float(hx), float(hy), float(hz)
+    det_j = (hx / 2.0) * (hy / 2.0) * (hz / 2.0)
+    inv_jx = 2.0 / hx
+    inv_jy = 2.0 / hy
+    inv_jz = 2.0 / hz
+
+    K = np.zeros((24, 24))
+    for xi, eta, zeta in gauss_points:
+        dN_dxi = 0.125 * node_xi * (1.0 + node_eta * eta) * (1.0 + node_zeta * zeta)
+        dN_deta = 0.125 * node_eta * (1.0 + node_xi * xi) * (1.0 + node_zeta * zeta)
+        dN_dzeta = 0.125 * node_zeta * (1.0 + node_xi * xi) * (1.0 + node_eta * eta)
+        dN_dx = inv_jx * dN_dxi
+        dN_dy = inv_jy * dN_deta
+        dN_dz = inv_jz * dN_dzeta
+        B = np.zeros((6, 24))
+        for i in range(8):
+            B[0, 3 * i] = dN_dx[i]
+            B[1, 3 * i + 1] = dN_dy[i]
+            B[2, 3 * i + 2] = dN_dz[i]
+            B[3, 3 * i] = dN_dy[i]
+            B[3, 3 * i + 1] = dN_dx[i]
+            B[4, 3 * i + 1] = dN_dz[i]
+            B[4, 3 * i + 2] = dN_dy[i]
+            B[5, 3 * i] = dN_dz[i]
+            B[5, 3 * i + 2] = dN_dx[i]
         K += (B.T @ C @ B) * det_j
     return K
 
@@ -365,5 +466,64 @@ def hex8_diffusion_stiffness(conductivity: float, h: float) -> np.ndarray:
         dN_deta = 0.125 * node_eta * (1.0 + node_xi * xi) * (1.0 + node_zeta * zeta)
         dN_dzeta = 0.125 * node_zeta * (1.0 + node_xi * xi) * (1.0 + node_eta * eta)
         G = np.vstack([inv_j * dN_dxi, inv_j * dN_deta, inv_j * dN_dzeta])  # (3, 8)
+        K += k * (G.T @ G) * det_j
+    return K
+
+
+def q4_diffusion_stiffness_aniso(conductivity: float, hx: float, hy: float) -> np.ndarray:
+    """Anisotropic-grid analogue of :func:`q4_diffusion_stiffness`.
+
+    Same element, shape functions, and quadrature, but the element is a
+    rectangle of side ``hx * hy``: ``det_J = hx*hy/4``,
+    ``inv_J = diag(2/hx, 2/hy)``. Reduces exactly to
+    :func:`q4_diffusion_stiffness` when ``hx == hy == h``.
+    """
+    k = float(conductivity)
+    hx, hy = float(hx), float(hy)
+    gp = 1.0 / np.sqrt(3.0)
+    gauss_points = [(-gp, -gp), (gp, -gp), (gp, gp), (-gp, gp)]
+    node_xi = np.array([-1.0, 1.0, 1.0, -1.0])
+    node_eta = np.array([-1.0, -1.0, 1.0, 1.0])
+    det_j = (hx / 2.0) * (hy / 2.0)
+    inv_jx = 2.0 / hx
+    inv_jy = 2.0 / hy
+
+    K = np.zeros((4, 4))
+    for xi, eta in gauss_points:
+        dN_dxi = 0.25 * node_xi * (1.0 + node_eta * eta)
+        dN_deta = 0.25 * node_eta * (1.0 + node_xi * xi)
+        G = np.vstack([inv_jx * dN_dxi, inv_jy * dN_deta])  # (2, 4)
+        K += k * (G.T @ G) * det_j
+    return K
+
+
+def hex8_diffusion_stiffness_aniso(
+    conductivity: float, hx: float, hy: float, hz: float
+) -> np.ndarray:
+    """Anisotropic-grid analogue of :func:`hex8_diffusion_stiffness`.
+
+    Same element, shape functions, and quadrature, but the element is a
+    rectangular box of side ``hx * hy * hz``: ``det_J = hx*hy*hz/8``,
+    ``inv_J = diag(2/hx, 2/hy, 2/hz)``. Reduces exactly to
+    :func:`hex8_diffusion_stiffness` when ``hx == hy == hz == h``.
+    """
+    k = float(conductivity)
+    hx, hy, hz = float(hx), float(hy), float(hz)
+    gp = 1.0 / np.sqrt(3.0)
+    gauss_points = [(a, b, c) for a in (-gp, gp) for b in (-gp, gp) for c in (-gp, gp)]
+    node_xi = np.array([-1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0, -1.0])
+    node_eta = np.array([-1.0, -1.0, 1.0, 1.0, -1.0, -1.0, 1.0, 1.0])
+    node_zeta = np.array([-1.0, -1.0, -1.0, -1.0, 1.0, 1.0, 1.0, 1.0])
+    det_j = (hx / 2.0) * (hy / 2.0) * (hz / 2.0)
+    inv_jx = 2.0 / hx
+    inv_jy = 2.0 / hy
+    inv_jz = 2.0 / hz
+
+    K = np.zeros((8, 8))
+    for xi, eta, zeta in gauss_points:
+        dN_dxi = 0.125 * node_xi * (1.0 + node_eta * eta) * (1.0 + node_zeta * zeta)
+        dN_deta = 0.125 * node_eta * (1.0 + node_xi * xi) * (1.0 + node_zeta * zeta)
+        dN_dzeta = 0.125 * node_zeta * (1.0 + node_xi * xi) * (1.0 + node_eta * eta)
+        G = np.vstack([inv_jx * dN_dxi, inv_jy * dN_deta, inv_jz * dN_dzeta])  # (3, 8)
         K += k * (G.T @ G) * det_j
     return K

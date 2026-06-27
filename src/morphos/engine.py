@@ -146,10 +146,13 @@ class CoupledEngine:
         return self._run_staggered(spec)
 
     def _run_staggered(self, spec: CoupledSpec) -> List[DesignResult]:
+        import numpy as np
+
         field = spec.initial_field
         stage_results: List[DesignResult] = []
 
         for _ in range(spec.n_outer):
+            prev_vals = field.values.copy()
             stage_aux: dict = {}
             stage_results = []
             for i, (oracle, objective, constraint) in enumerate(spec.stages):
@@ -167,6 +170,12 @@ class CoupledEngine:
                 field = opt.field
                 stage_aux[i] = oracle.solve(field).aux
                 stage_results.append(_result_from_opt(opt, objective, constraint))
+
+            # Outer-loop convergence: stop when the coupled field stopped changing.
+            ref = np.linalg.norm(prev_vals)
+            delta = np.linalg.norm(field.values - prev_vals)
+            if ref > 0 and delta / ref < spec.outer_tol:
+                break
 
         return stage_results
 
