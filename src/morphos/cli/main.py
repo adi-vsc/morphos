@@ -10,6 +10,7 @@ errors, and ``--debug`` to surface a full traceback instead of a clean message.
 from __future__ import annotations
 
 import argparse
+import os
 import struct
 import sys
 import traceback
@@ -77,6 +78,18 @@ def _print_run_summary(result) -> None:
 
 
 def _cmd_run(args) -> int:
+    if args.llm:
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            _error(
+                "ANTHROPIC_API_KEY is not set; cannot use --llm. "
+                "If running inside Claude Code, this is set automatically."
+            )
+            sys.exit(1)
+        from morphos.agent.llm_router import LLMInterpreter
+        interpreter = LLMInterpreter()
+    else:
+        interpreter = None  # noqa: F841 — reserved for future text-request path
+
     try:
         spec = morphos.from_json(args.spec_file)
     except Exception as exc:  # noqa: BLE001 - surface a clean message to the user
@@ -215,6 +228,40 @@ def _cmd_validate(args) -> int:
     return 0 if watertight else 2
 
 
+# --- calibrate ----------------------------------------------------------------
+
+
+def _cmd_calibrate(args) -> int:
+    import json
+    from pathlib import Path
+    from morphos.feedback import FeedbackRecord, OracleCalibrator, PolynomialGainModel
+
+    results_dir = Path(args.results_dir)
+    if not results_dir.is_dir():
+        _error(f"directory not found: {results_dir}")
+        return 1
+
+    records = []
+    for p in sorted(results_dir.glob("*.json")):
+        try:
+            records.append(FeedbackRecord.from_json(p.read_text(encoding="utf-8")))
+        except Exception as e:  # noqa: BLE001
+            _error(f"Skipping {p.name}: {e}")
+
+    if not records:
+        _error(f"No valid FeedbackRecord JSON files found in {results_dir}")
+        return 1
+
+    model = PolynomialGainModel(degree=1)
+    calibrator = OracleCalibrator(records=records, model=model)
+    result = calibrator.calibrate()
+
+    _safe_print(f"  Calibrated on {len(records)} records")
+    _safe_print(f"  Polynomial coefficients: {result.coeffs}")
+    _safe_print(f"  R²: {result.r_squared:.4f}")
+    return 0
+
+
 # --- batch --------------------------------------------------------------------
 
 
@@ -324,6 +371,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--checkpoint-dir", default=None)
     p_run.add_argument("--resume-from", default=None)
     p_run.add_argument("--solver", choices=["auto", "direct", "iterative"], default="auto")
+    p_run.add_argument("--llm", action="store_true", default=False,
+        help="Use LLMInterpreter (requires ANTHROPIC_API_KEY) to interpret the request.")
     p_run.add_argument("--quiet", action="store_true")
     p_run.add_argument("--debug", action="store_true")
     p_run.set_defaults(func=_cmd_run)
@@ -352,6 +401,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p_batch.add_argument("--quiet", action="store_true")
     p_batch.add_argument("--debug", action="store_true")
     p_batch.set_defaults(func=_cmd_batch)
+
+    p_calibrate = sub.add_parser(
+        "calibrate", help="Fit oracle calibration model from JSON results."
+    )
+    p_calibrate.add_argument("results_dir", help="Directory containing FeedbackRecord JSON files.")
+    p_calibrate.set_defaults(func=_cmd_calibrate)
 
     return parser
 
