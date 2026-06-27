@@ -77,13 +77,13 @@ class ParametricOptimizer:
         # signature the topology optimizer reports, so the callback is left
         # unwired here rather than fed misleading values.
         if self.resume_from is not None:
-            # Warm start: resume the parameter vector (stored as a 1-D Field
+            # Warm start: resume the parameter vector (stored as a (1, n) Field
             # in the checkpoint's field slot) and history; L-BFGS-B itself
             # carries no other persistent state between independent calls to
             # minimize, so restoring x0 and the FOM history fully resumes
             # the search from where it left off.
             param_field, _, _, _, history = load_checkpoint(self.resume_from)
-            x0 = np.asarray(param_field.values, dtype=float)
+            x0 = np.asarray(param_field.values, dtype=float).ravel()
         else:
             x0 = np.array(initial_params, dtype=float)
             history = []
@@ -103,7 +103,7 @@ class ParametricOptimizer:
             ):
                 save_checkpoint(
                     checkpoint_path(self.checkpoint_dir),
-                    Field(np.asarray(xk, dtype=float), spacing=1.0),
+                    Field(np.asarray(xk, dtype=float).reshape(1, -1), spacing=1.0),
                     iteration[0], p=0.0, beta=0.0, history=history,
                 )
 
