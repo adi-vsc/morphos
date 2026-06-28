@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "morphos"
-version = "0.1.0"
+version = "0.2.0"
 description = "A physics-driven engine that generates manufacturable geometry by optimizing it toward physical limits."
 readme = "README.md"
 requires-python = ">=3.10"

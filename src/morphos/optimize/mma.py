@@ -50,6 +50,8 @@ class MMAOptimizer(Optimizer):
         p_ramp_fraction: float = 0.4,
         xmin: float = 1e-3,
         xmax: float = 1.0,
+        min_length_scale: float = 0.0,
+        min_length_eta: float = 0.75,
     ) -> None:
         self.volume_fraction = float(volume_fraction)
         self.max_iter = int(max_iter)
@@ -62,6 +64,8 @@ class MMAOptimizer(Optimizer):
         self.p_ramp_fraction = float(p_ramp_fraction)
         self.xmin = float(xmin)
         self.xmax = float(xmax)
+        self.min_length_scale = float(min_length_scale)
+        self.min_length_eta = float(min_length_eta)
 
         # Reuse the filter / projection / chain-rule machinery from
         # TopologyOptimizer instead of duplicating it.
@@ -73,6 +77,8 @@ class MMAOptimizer(Optimizer):
             p_end=p_end,
             p_ramp_fraction=p_ramp_fraction,
             max_iter=max_iter,
+            min_length_scale=min_length_scale,
+            min_length_eta=min_length_eta,
         )
 
         self.xold1: Optional[np.ndarray] = None

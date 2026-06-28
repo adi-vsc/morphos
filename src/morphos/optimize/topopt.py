@@ -85,6 +85,8 @@ class TopologyOptimizer(Optimizer):
         line_search: bool = False,
         max_backtracks: int = 20,
         volume_fraction: Optional[float] = None,
+        min_length_scale: float = 0.0,
+        min_length_eta: float = 0.75,
     ) -> None:
         """Gradient-ascent SIMP topology optimizer.
 
@@ -166,6 +168,20 @@ class TopologyOptimizer(Optimizer):
             returned silently as a result.
         max_backtracks:
             Maximum step halvings per iteration when ``line_search`` is on.
+        min_length_scale:
+            Minimum feature size (in voxels) enforced via the Guest et al.
+            (2004) double-filter scheme: a second filter-project pass is
+            inserted after the first Heaviside projection, eroding away
+            solid features thinner than this scale before the complementary
+            (void) projection restores the rest. ``0`` (the default)
+            disables the double filter entirely, preserving the original
+            single filter -> Heaviside -> constraint chain exactly.
+        min_length_eta:
+            Threshold ``eta`` used for the first (erosion) projection in the
+            double-filter scheme. The second (dilation) projection uses the
+            complementary threshold ``1 - min_length_eta``. Default ``0.75``
+            enforces a minimum SOLID length scale. Ignored when
+            ``min_length_scale <= 0``.
         """
         self.step_size = float(step_size)
         self.max_iter = int(max_iter)
@@ -191,6 +207,8 @@ class TopologyOptimizer(Optimizer):
         if volume_fraction is not None and not (0.0 < float(volume_fraction) <= 1.0):
             raise ValueError("volume_fraction must be in (0, 1]")
         self.volume_fraction = None if volume_fraction is None else float(volume_fraction)
+        self.min_length_scale = float(min_length_scale)
+        self.min_length_eta = float(min_length_eta)
 
     # --- SIMP p / beta continuation schedule -----------------------------
 
@@ -288,9 +306,28 @@ class TopologyOptimizer(Optimizer):
         """Run the raw design ``x`` through filter -> Heaviside -> constraint,
         returning the final projected ``Field`` plus the intermediates needed
         to chain a gradient back through every stage in :meth:`_chain_vjp`.
+
+        When ``min_length_scale > 0`` a second filter-project pass (Guest et
+        al. 2004) is inserted after the first Heaviside projection (still at
+        the default ``eta=0.5``): the second filter re-smooths the first
+        projection's output, and a second projection at the complementary
+        threshold ``1 - min_length_eta`` (default ``min_length_eta=0.75``,
+        so ``eta=0.25``) erodes thin solid features that the first stage
+        left behind. ``filtered`` (the FIRST filter's output, before any
+        projection) is still what is returned/reused so that
+        :meth:`_chain_vjp` can recompute the same intermediate values.
         """
         filtered = self._apply_filter(x.values)
         projected_values = self._heaviside_project(filtered, beta)
+
+        if self.min_length_scale > 0:
+            # Second filter with same radius
+            filtered2 = self._apply_filter(projected_values)
+            # Second projection: complementary threshold enforces void minimum length
+            projected_values = self._heaviside_project(
+                filtered2, beta, eta=1.0 - self.min_length_eta
+            )
+
         projected = x.like(projected_values)
         design = self._project(projected, constraint)
         return design, filtered
@@ -299,12 +336,31 @@ class TopologyOptimizer(Optimizer):
         self, x: Field, filtered: np.ndarray, beta: float, grad: np.ndarray, constraint
     ) -> np.ndarray:
         """Chain a gradient (in design-Field space) back through the
-        constraint projection, then the Heaviside projection, then the
-        density filter, to gradient-in-raw-x space, in that reverse order."""
+        constraint projection, then the Heaviside projection(s) and filter(s),
+        to gradient-in-raw-x space, in that reverse order.
+
+        When ``min_length_scale > 0`` this recomputes the same double-filter
+        forward intermediates :meth:`_design_chain` produced (the first
+        projection's output, the second filter's output) and backprops
+        through the second projection (complementary eta), the second
+        filter, then the first projection (at the default ``eta=0.5``)
+        before falling through to the shared first-filter VJP.
+        """
         g = grad
         if constraint is not None:
             g = constraint.vjp(x, g)
-        g = self._heaviside_vjp(filtered, beta, g)
+
+        if self.min_length_scale > 0:
+            # Backprop through second projection (eta_void = 1 - min_length_eta)
+            filtered2 = self._apply_filter(self._heaviside_project(filtered, beta))
+            g = self._heaviside_vjp(filtered2, beta, g, eta=1.0 - self.min_length_eta)
+            # Backprop through second filter
+            g = self._filter_vjp(g)
+            # Backprop through first projection
+            g = self._heaviside_vjp(filtered, beta, g, eta=0.5)
+        else:
+            g = self._heaviside_vjp(filtered, beta, g)
+
         g = self._filter_vjp(g)
         return g
 

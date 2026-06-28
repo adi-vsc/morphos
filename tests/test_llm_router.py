@@ -26,6 +26,7 @@ def test_llm_interpreter_successful_extraction(monkeypatch):
     Asserts that LLMInterpreter returns a Plan with a non-None generator
     whose intent_class is CantileverIntent.
     """
+    pytest.importorskip("anthropic")
     from morphos.agent.llm_router import LLMInterpreter
     from morphos.intent import CantileverIntent
 
@@ -53,6 +54,7 @@ def test_llm_interpreter_unsupported_raises(monkeypatch):
 
     Asserts that LLMInterpreter raises ValueError with the model's reason.
     """
+    pytest.importorskip("anthropic")
     from morphos.agent.llm_router import LLMInterpreter
 
     reason = "No intent matches a turbopump impeller with variable-pitch blades."
@@ -70,6 +72,7 @@ def test_llm_interpreter_unsupported_raises(monkeypatch):
 
 def test_llm_interpreter_raises_without_api_key(monkeypatch):
     """LLMInterpreter raises ValueError when ANTHROPIC_API_KEY is absent."""
+    pytest.importorskip("anthropic")
     from morphos.agent.llm_router import LLMInterpreter
 
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)

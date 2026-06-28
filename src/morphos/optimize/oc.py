@@ -36,7 +36,7 @@ from scipy import ndimage
 
 from morphos.field import Field
 from morphos.optimize.optimizer import Optimizer, OptimizeResult
-from morphos.optimize.topopt import _evaluate, _set_penalty
+from morphos.optimize.topopt import _evaluate, _set_penalty, TopologyOptimizer
 
 
 class OCOptimizer(Optimizer):
@@ -69,7 +69,24 @@ class OCOptimizer(Optimizer):
         SIMP p-continuation schedule. Identical semantics to TopologyOptimizer.
     tol:
         FOM-change tolerance for early convergence.
+    min_length_scale:
+        Minimum feature size (in voxels) enforced via the Guest et al.
+        (2004) double-filter scheme. ``0`` (the default) disables it,
+        preserving the original single-filter behavior exactly. OC has no
+        native Heaviside projection, so when this is enabled the filtered
+        density is additionally passed through a fixed-sharpness
+        (``beta=16``) projection at ``eta=0.5``, a second filter pass, and a
+        complementary (``eta = 1 - min_length_eta``) dilation projection
+        before being handed to the oracle (the same chain as
+        :class:`~morphos.optimize.topopt.TopologyOptimizer`).
+    min_length_eta:
+        Controls the complementary threshold ``eta = 1 - min_length_eta`` of
+        the second (dilation) projection in the double-filter scheme.
+        Default ``0.75`` (so the dilation projects at ``eta=0.25``) enforces
+        a minimum SOLID length scale. Ignored when ``min_length_scale <= 0``.
     """
+
+    _MIN_LENGTH_BETA = 16.0
 
     def __init__(
         self,
@@ -85,6 +102,8 @@ class OCOptimizer(Optimizer):
         p_end: float = 3.0,
         p_ramp_fraction: float = 0.5,
         tol: float = 1e-4,
+        min_length_scale: float = 0.0,
+        min_length_eta: float = 0.75,
     ) -> None:
         self.volume_fraction = float(volume_fraction)
         self.max_iter = int(max_iter)
@@ -100,6 +119,8 @@ class OCOptimizer(Optimizer):
         self.p_end = float(p_end)
         self.p_ramp_fraction = float(p_ramp_fraction)
         self.tol = float(tol)
+        self.min_length_scale = float(min_length_scale)
+        self.min_length_eta = float(min_length_eta)
 
     # --- SIMP p continuation schedule (mirrors TopologyOptimizer) -----------
 
@@ -107,6 +128,17 @@ class OCOptimizer(Optimizer):
         ramp_iters = max(1, int(self.p_ramp_fraction * self.max_iter))
         t = min(1.0, iteration / ramp_iters)
         return self.p_start + t * (self.p_end - self.p_start)
+
+    def _current_min_length_beta(self, iteration: int) -> float:
+        """Heaviside sharpness for the min-length double filter, ramped from
+        a soft start to ``_MIN_LENGTH_BETA`` over the same fraction as the
+        SIMP p schedule. A sharp projection applied from iteration 0 to a
+        uniform-gray field produces spiky gradients the OC update cannot
+        navigate (mirrors why TopologyOptimizer ramps beta); ramping keeps
+        the early design smooth and load-bearing."""
+        ramp_iters = max(1, int(self.p_ramp_fraction * self.max_iter))
+        t = min(1.0, iteration / ramp_iters)
+        return 1.0 + t * (self._MIN_LENGTH_BETA - 1.0)
 
     # --- Self-adjoint box density filter ------------------------------------
 
@@ -141,6 +173,56 @@ class OCOptimizer(Optimizer):
             grad, size=self._filter_size(), mode="constant", cval=0.0
         )
 
+    # --- Double-filter minimum length scale (Guest et al. 2004) ------------
+
+    def _apply_min_length_filter(self, values: np.ndarray, beta: float) -> np.ndarray:
+        """Second filter-project pass enforcing ``min_length_scale``.
+
+        Applied AFTER the main density filter, mirroring the proven
+        :class:`~morphos.optimize.topopt.TopologyOptimizer` double-filter
+        chain (Guest et al. 2004): project at ``eta=0.5`` to binarize the
+        gray filtered field, filter again with the same radius, then project
+        at the complementary threshold ``eta = 1 - min_length_eta`` (default
+        0.25, dilation -- restores solid around the eroded interface).
+
+        The first projection MUST be at ``eta=0.5`` rather than at
+        ``min_length_eta``: OC bisects volume on the raw density, which sits
+        near ``volume_fraction`` (~0.4). Eroding that gray field at a high
+        threshold (e.g. eta=0.75) drives the whole projected design to void
+        before the physics ever sees structure, collapsing the optimization;
+        projecting at 0.5 lets the ~0.4-mean field straddle the threshold and
+        keep a load-bearing design. ``beta`` is ramped by the caller (see
+        :meth:`_current_min_length_beta`). A no-op when
+        ``min_length_scale <= 0``.
+        """
+        if self.min_length_scale <= 0:
+            return values
+        eroded = TopologyOptimizer._heaviside_project(values, beta, eta=0.5)
+        refiltered = self._apply_filter(eroded)
+        dilated = TopologyOptimizer._heaviside_project(
+            refiltered, beta, eta=1.0 - self.min_length_eta
+        )
+        return dilated
+
+    def _min_length_filter_vjp(
+        self, values: np.ndarray, grad: np.ndarray, beta: float
+    ) -> np.ndarray:
+        """VJP of :meth:`_apply_min_length_filter`.
+
+        ``values`` must be the SAME input that was passed to
+        :meth:`_apply_min_length_filter` (the main-filter output) and
+        ``beta`` the SAME sharpness, so the forward intermediates can be
+        recomputed for the chain rule. A no-op when ``min_length_scale <= 0``.
+        """
+        if self.min_length_scale <= 0:
+            return grad
+        eroded = TopologyOptimizer._heaviside_project(values, beta, eta=0.5)
+        refiltered = self._apply_filter(eroded)
+        g = TopologyOptimizer._heaviside_vjp(refiltered, beta, grad, eta=1.0 - self.min_length_eta)
+        g = self._filter_vjp(g)
+        g = TopologyOptimizer._heaviside_vjp(values, beta, g, eta=0.5)
+        return g
+
     # --- OC multiplicative update -------------------------------------------
 
     def _oc_update(self, rho: np.ndarray, g: np.ndarray, lam: float) -> np.ndarray:
@@ -157,17 +239,39 @@ class OCOptimizer(Optimizer):
         rho_new = np.clip(rho_new, lo, hi)
         return np.clip(rho_new, self.rho_min, 1.0)  # safety clip
 
-    def _bisect_lambda(self, rho: np.ndarray, g: np.ndarray) -> np.ndarray:
-        """Bisect lambda in [1e-9, 1e9] so that mean(rho_new) == volume_fraction.
+    def _design_volume(self, rho_new: np.ndarray, beta: float) -> float:
+        """Mean density of the design the oracle actually sees for a given
+        raw rho: the full forward chain (main filter -> min-length double
+        filter) at the current ``beta``.
+        """
+        return float(
+            np.mean(self._apply_min_length_filter(self._apply_filter(rho_new), beta))
+        )
 
-        mean(rho_new(lambda)) is monotone decreasing in lambda, guaranteeing a
-        unique solution when V* is inside the achievable range.
+    def _bisect_lambda(self, rho: np.ndarray, g: np.ndarray, beta: float) -> np.ndarray:
+        """Bisect lambda in [1e-9, 1e9] so the volume measure == volume_fraction.
+
+        When ``min_length_scale > 0`` the measure is the volume of the
+        *projected design* (what the oracle sees), not the raw density: the
+        min-length double filter projects with a sharp fixed beta, so a raw
+        density pinned to V* can project to a near-empty design and starve
+        the physics. Driving the projected-design volume to V* instead keeps
+        the design load-bearing for any beta. With ``min_length_scale <= 0``
+        the measure is the raw mean (original behavior, preserved exactly).
+
+        Both measures are monotone decreasing in lambda (the OC update and
+        the whole forward chain are monotone in rho), guaranteeing a unique
+        root when V* is inside the achievable range.
         """
         lam_lo, lam_hi = 1e-9, 1e9
         target = self.volume_fraction
+        if self.min_length_scale > 0:
+            measure = lambda rho_new: self._design_volume(rho_new, beta)
+        else:
+            measure = np.mean
         for _ in range(60):
             lam_mid = 0.5 * (lam_lo + lam_hi)
-            if np.mean(self._oc_update(rho, g, lam_mid)) > target:
+            if measure(self._oc_update(rho, g, lam_mid)) > target:
                 lam_lo = lam_mid
             else:
                 lam_hi = lam_mid
@@ -223,8 +327,11 @@ class OCOptimizer(Optimizer):
             p = self._current_p(i)
             _set_penalty(oracle, objective, p)
 
+            ml_beta = self._current_min_length_beta(i)
+
             filtered_vals = self._apply_filter(rho.values)
-            design = rho.like(filtered_vals)
+            design_vals = self._apply_min_length_filter(filtered_vals, ml_beta)
+            design = rho.like(design_vals)
 
             ov = _evaluate(design, oracle, objective)
 
@@ -235,7 +342,8 @@ class OCOptimizer(Optimizer):
                     "where no analytic gradient is available."
                 )
 
-            g = self._filter_vjp(ov.gradient)
+            g = self._min_length_filter_vjp(filtered_vals, ov.gradient, ml_beta)
+            g = self._filter_vjp(g)
             history.append(ov.fom)
 
             delta = abs(ov.fom - prev_fom) if prev_fom is not None else 0.0
@@ -251,7 +359,7 @@ class OCOptimizer(Optimizer):
                 break
 
             prev_fom = ov.fom
-            rho = rho.like(self._bisect_lambda(rho.values, g))
+            rho = rho.like(self._bisect_lambda(rho.values, g, ml_beta))
 
         return OptimizeResult(
             field=best_field,

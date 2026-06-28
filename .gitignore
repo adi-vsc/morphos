@@ -29,6 +29,7 @@ showcase/
 *.stl
 
 # AI-tooling artifacts (never ship on the public engine surface)
+MEMORY.md
 .claude/
 .claude-flow/
 .swarm/
