@@ -21,7 +21,7 @@ no generator fits. Morphos is not a universal "describe anything → geometry"
 synthesizer; it builds the part families it has generators for, and grows by
 adding generators.
 
-> **Status: early research preview (v0.1.0).** Every physics oracle is
+> **Status: early research preview (v0.2.0).** Every physics oracle is
 > cross-checked against an **independent** reference — closed-form solutions, a
 > published topology-optimization benchmark, and an external FEM solver
 > (scikit-fem), in 2D and 3D — by the [validation suite](#validation) (14/14
@@ -122,8 +122,10 @@ returns a `MorphosResult` with the `DesignResult`, the `PerformanceReport`, the
 
 ```
 morphos run spec.json --output-dir ./out      # run a spec
+morphos run spec.json --llm                    # parse a natural-language intent via the LLM interpreter
 morphos info spec.json                         # inspect a spec without optimizing
 morphos validate ./out/design.stl             # check a mesh is watertight
+morphos calibrate ./results                    # fit oracle gains from FeedbackRecord JSON files
 morphos batch ./specs --output-dir ./b --jobs 4
 ```
 
@@ -157,16 +159,38 @@ swappable behind one interface, so a new physics is a new backend, not a rewrite
 | `ModalOracle`          | Modal eigenfrequency                              | y  | y  | Fundamental-frequency objectives.                |
 | `FDTD3DOracle`         | Electromagnetics (time-domain FDTD)               |    | y  | 3D electromagnetic topology optimisation.        |
 
+## Optimizers
+
+The optimizer steps the density `Field` using gradients from a physics oracle.
+Several schemes are available behind one interface, swappable per run:
+
+| Optimizer            | Method                                              | Use it for                                        |
+| -------------------- | --------------------------------------------------- | ------------------------------------------------- |
+| `OCOptimizer`        | Optimality criteria with density filtering          | Single volume-constrained compliance problems.    |
+| `MMAOptimizer`       | Method of Moving Asymptotes                          | Multiple/nonlinear constraints.                   |
+| `LevelSetOptimizer`  | Level-set boundary evolution (Allaire; Wang et al.) | Crisp, ungrayed boundaries by construction.       |
+| `RobustOptimizer`    | Three-field / delta-p eroded-nominal-dilated         | LPBF print-tolerance robustness (worst-case duty).|
+
+Designs can be **seeded** before optimization (`morphos.initialize`): a
+reaction-diffusion field or a bio-inspired Murray's-law branching network, which
+gives the optimizer a topology to refine instead of a uniform gray start. Oracles
+can also be **calibrated** against reference data (`morphos calibrate`) with a
+polynomial gain model to tighten the reported performance.
+
 ## Geometry generators
 
-The implicit-geometry generators the agent can build today. Each is a
+The implicit-geometry generators the agent can build today — 13 across five
+families (exchangers, lattices, channels, fin arrays, manifolds, ribs). Each is a
 parametric SDF that produces a watertight, self-supporting part:
 
 | Generator               | Builds                                                        | Quality check |
 | ----------------------- | ------------------------------------------------------------ | ------------- |
 | `gyroid_heat_exchanger` | Counter-flow gyroid (TPMS) core: a sealed wall separating two interpenetrating fluid networks. | leak-tightness + single-network per fluid, verified |
 | `gyroid_lattice_block`  | An envelope filled with a gyroid lattice at a target volume fraction (lightweighting). | target volume fraction |
-| `pin_fin_heat_sink`     | A base plate with a periodic array of square pins (convective cooling). | — |
+| `pin_fin_heat_sink` / `pin_fin_array` / `plate_fin_array` / `corrugated_fin` | Convective fin arrays on a base plate (square pins, plates, corrugations). | — |
+| `straight_channel` / `serpentine_channel` | Internal flow channels (direct and serpentine routing). | — |
+| `y_manifold` / `tree_manifold` | Flow-splitting manifolds (single-Y and branching tree). | — |
+| `cross_rib` / `i_beam_rib` / `honeycomb_rib` | Structural stiffening rib patterns. | — |
 
 Adding a capability is adding a generator plus a `GeneratorSpec` in
 `morphos/agent/catalog.py`. That is the unit of progress: breadth comes from
@@ -233,7 +257,7 @@ Morphos has not been cross-checked against commercial FEA/CFD (Abaqus, Ansys,
 COMSOL) or physical test data. Treat all outputs as indicative.
 
 **The agent is a router over a small catalog, not a universal designer.** It
-builds the part families it has generators for (currently three) and refuses the
+builds the part families it has generators for (currently 13) and refuses the
 rest. It does not synthesize arbitrary geometry from a description. Breadth grows
 by adding generators, each of which is hand-written and tested.
 
